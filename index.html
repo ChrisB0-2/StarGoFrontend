@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StarGo - Satellite Visualization</title>
+    
+    <!-- Favicon (using a data URI to avoid 404 error) -->
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><circle cx='50' cy='50' r='40' fill='%23FFD700'/></svg>">
+    
+    <!-- Cesium CSS -->
+    <link href="https://cesium.com/downloads/cesiumjs/releases/1.110/Build/Cesium/Widgets/widgets.css" rel="stylesheet">
+    
+    <!-- Custom CSS -->
+    <link href="styles.css" rel="stylesheet">
+    
+    <!-- Cesium JS -->
+    <script src="https://cesium.com/downloads/cesiumjs/releases/1.110/Build/Cesium/Cesium.js"></script>
+</head>
+<body>
+    <!-- Cesium Viewer Container -->
+    <div id="cesiumContainer"></div>
+    
+    <!-- Status Bar Overlay -->
+    <div id="statusBar">
+        <div class="status-group">
+            <div id="connectionStatus" class="status-item">
+                <span class="status-label">Connection:</span>
+                <span class="status-value" id="connectionStatusValue">Connecting...</span>
+            </div>
+            <div id="satelliteCount" class="status-item">
+                <span class="status-label">Satellites:</span>
+                <span class="status-value" id="satelliteCountValue">0</span>
+            </div>
+        </div>
+        <div class="status-group">
+            <div id="tleAge" class="status-item">
+                <span class="status-label">TLE Age:</span>
+                <span class="status-value" id="tleAgeValue">--</span>
+            </div>
+            <div id="datasetEpoch" class="status-item">
+                <span class="status-label">Dataset Epoch:</span>
+                <span class="status-value" id="datasetEpochValue">--</span>
+            </div>
+        </div>
+        <div class="status-group">
+            <div id="fps" class="status-item">
+                <span class="status-label">FPS:</span>
+                <span class="status-value" id="fpsValue">--</span>
+            </div>
+            <div id="keyframeCount" class="status-item">
+                <span class="status-label">Keyframes:</span>
+                <span class="status-value" id="keyframeCountValue">0</span>
+            </div>
+            <div class="status-item">
+                <span class="status-label">TLE Health:</span>
+                <span class="status-value status-good" id="tleHealthIndicator">OK</span>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Controls Panel -->
+    <div id="controlsPanel">
+        <div class="controls-header">
+            <h3>Controls</h3>
+            <button id="toggleControls" class="toggle-btn">&minus;</button>
+        </div>
+        <div id="controlsContent">
+            <div class="control-group">
+                <label for="backendUrl">Backend URL:</label>
+                <input type="text" id="backendUrl" placeholder="http://127.0.0.1:8080" />
+                <button id="connectBtn">Connect</button>
+            </div>
+            
+            <div class="control-group">
+                <label for="authToken">Auth Token (optional):</label>
+                <input type="text" id="authToken" placeholder="Leave empty if no auth" />
+            </div>
+            
+            <div class="control-group">
+                <button id="playPauseBtn" class="primary-btn">Pause</button>
+                <label for="speedSelect">Speed:</label>
+                <select id="speedSelect">
+                    <option value="0.5">0.5x</option>
+                    <option value="1" selected>1x</option>
+                    <option value="2">2x</option>
+                    <option value="5">5x</option>
+                    <option value="10">10x</option>
+                </select>
+            </div>
+            
+            <div class="control-group">
+                <label>
+                    <input type="checkbox" id="showLabelsCheckbox" />
+                    Show Satellite Labels
+                </label>
+            </div>
+            
+            <div class="control-group">
+                <label>
+                    <input type="checkbox" id="fullOrbitsCheckbox" checked />
+                    Show Full Orbits (90 min) on Click
+                </label>
+            </div>
+            
+            <!-- Phase 4: Advanced Orbit Controls (shown when satellites selected) -->
+            <div class="control-group" id="phase4ControlGroup" style="display: none;">
+                <label for="historyTrailSelect">History Trail:</label>
+                <select id="historyTrailSelect">
+                    <option value="5">5 min</option>
+                    <option value="10" selected>10 min</option>
+                    <option value="30">30 min</option>
+                </select>
+                <label>
+                    <input type="checkbox" id="uncertaintyCheckbox" />
+                    Show Uncertainty
+                </label>
+                <div style="display: flex; gap: 8px; align-items: center;">
+                    <label for="uncertaintyModeSelect" style="margin: 0;">Mode:</label>
+                    <select id="uncertaintyModeSelect">
+                        <option value="simple" selected>Simple (dashed)</option>
+                        <option value="corridor">Corridor (band)</option>
+                    </select>
+                </div>
+            </div>
+
+            <div class="control-group">
+                <button id="resetViewBtn">Reset View</button>
+                <button id="clearDataBtn">Clear Data</button>
+                <button id="refreshTLEBtn" class="primary-btn">🔄 Refresh TLE Data</button>
+            </div>
+            
+            <div class="control-group">
+                <label for="satelliteSearch">Search Satellite (NORAD ID):</label>
+                <div style="display: flex; gap: 5px;">
+                    <input type="number" id="satelliteSearch" placeholder="e.g. 44713" style="flex: 1;" />
+                    <button id="searchSatelliteBtn" class="primary-btn">🔍 Search</button>
+                </div>
+                <div id="searchStatus" style="margin-top: 5px; font-size: 0.9em; color: #888;"></div>
+            </div>
+            
+            <div class="control-group">
+                <button id="clearSelectionBtn">Clear Selection (<span id="selectionCount">0</span>)</button>
+            </div>
+            
+            <!-- Selection Panel -->
+            <div id="selectionPanel" style="display: none;">
+                <div class="selection-header">Selected Satellites</div>
+                <div class="selection-hint">Click satellites on the globe to select/deselect</div>
+                <div id="selectionList"></div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Pass Prediction Panel (Bottom Left) -->
+    <div id="passPanel">
+        <div class="pass-panel-header">
+            <h3>📡 Pass Prediction</h3>
+            <button id="togglePassPanel" class="toggle-btn">&minus;</button>
+        </div>
+        <div id="passPanelContent">
+            <!-- Observer Location -->
+            <div class="pass-section">
+                <div class="pass-section-title">Observer Location</div>
+                <div class="pass-location-row">
+                    <div class="pass-field">
+                        <label for="passLat">Lat:</label>
+                        <input type="number" id="passLat" step="0.0001" min="-90" max="90" placeholder="0.0" />
+                    </div>
+                    <div class="pass-field">
+                        <label for="passLng">Lng:</label>
+                        <input type="number" id="passLng" step="0.0001" min="-180" max="180" placeholder="0.0" />
+                    </div>
+                    <div class="pass-field">
+                        <label for="passAlt">Alt (m):</label>
+                        <input type="number" id="passAlt" step="1" min="0" placeholder="0" />
+                    </div>
+                </div>
+                <div class="pass-btn-row">
+                    <button id="useMyLocationBtn" class="pass-btn">📍 Use My Location</button>
+                    <span id="geoStatus" class="geo-status"></span>
+                </div>
+            </div>
+            
+            <!-- Prediction Parameters -->
+            <div class="pass-section">
+                <div class="pass-section-title">Parameters</div>
+                <div class="pass-params-row">
+                    <div class="pass-field">
+                        <label for="passMinElev">Min Elev (°):</label>
+                        <input type="range" id="passMinElev" min="0" max="90" value="10" />
+                        <span id="passMinElevValue" class="range-value">10°</span>
+                    </div>
+                    <div class="pass-field">
+                        <label for="passHorizon">Horizon:</label>
+                        <select id="passHorizon">
+                            <option value="1">1 hour</option>
+                            <option value="6">6 hours</option>
+                            <option value="12">12 hours</option>
+                            <option value="24" selected>24 hours</option>
+                            <option value="48">48 hours</option>
+                            <option value="72">72 hours</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="pass-btn-row">
+                    <button id="predictPassesBtn" class="pass-btn primary-btn">🔮 Predict Passes</button>
+                </div>
+            </div>
+            
+            <!-- Next Pass Countdown -->
+            <div id="passCountdown" class="pass-countdown" style="display: none;">
+                <span class="countdown-label">Next pass in:</span>
+                <span id="countdownTimer" class="countdown-timer">--:--:--</span>
+                <span id="countdownSat" class="countdown-sat"></span>
+            </div>
+            
+            <!-- Pass Results -->
+            <div id="passResultsSection" style="display: none;">
+                <div class="pass-section-title">
+                    Passes Found: <span id="passResultCount">0</span>
+                    <button id="exportCSVBtn" class="pass-btn-small" title="Export as CSV">📥 CSV</button>
+                    <button id="clearPassesBtn" class="pass-btn-small" title="Clear results">✕</button>
+                </div>
+                <div id="passTableContainer">
+                    <table id="passTable">
+                        <thead>
+                            <tr>
+                                <th data-sort="satellite">Satellite</th>
+                                <th data-sort="start">Start</th>
+                                <th data-sort="duration">Duration</th>
+                                <th data-sort="maxElev">Max El.</th>
+                                <th data-sort="azimuth">Az.</th>
+                                <th>Action</th>
+                            </tr>
+                        </thead>
+                        <tbody id="passTableBody">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            
+            <!-- Pass Loading State -->
+            <div id="passLoading" class="pass-loading" style="display: none;">
+                <span class="pass-loading-spinner"></span>
+                Computing passes...
+            </div>
+            
+            <!-- Pass Error Message -->
+            <div id="passError" class="pass-error" style="display: none;"></div>
+        </div>
+    </div>
+    
+    <!-- Application Script -->
+    <script src="app.js"></script>
+</body>
+</html>
