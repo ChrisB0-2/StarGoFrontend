@@ -2008,7 +2008,11 @@ function setupMiniEarthNavigation() {
     }
 
     // ---- Camera sync (snap-back resistant) ----
+    let userControlledRotation = false;
+
     function syncFromCamera() {
+        if (userControlledRotation) return;
+
         const camPos = viewer.camera.position;
         const dist = Cesium.Cartesian3.magnitude(camPos);
         if (dist < 1) return;
@@ -2019,35 +2023,35 @@ function setupMiniEarthNavigation() {
         const targetRotY = -orbitLon;
         const targetRotX = Math.max(-HALF_PI, Math.min(HALF_PI, orbitLat));
 
-        // Only update visual rotation if difference is significant (prevents micro snap-back)
-        if (Math.abs(targetRotY - rotationY) > 0.05) rotationY = targetRotY;
-        if (Math.abs(targetRotX - rotationX) > 0.05) rotationX = targetRotX;
+        // Large threshold prevents any snap-back (0.2 rad ≈ 11 degrees)
+        if (Math.abs(targetRotY - rotationY) > 0.2) rotationY = targetRotY;
+        if (Math.abs(targetRotX - rotationX) > 0.2) rotationX = targetRotX;
     }
 
     // ---- Drag handling ----
     let isDragging = false;
     let dragEndTime = 0;
-    const SYNC_COOLDOWN = 300;
+    const SYNC_COOLDOWN = 1000;
     let lastMouseX = 0;
     let lastMouseY = 0;
 
     function handleDrag(deltaX, deltaY) {
+        userControlledRotation = true;
         rotationY -= deltaX * 0.015;
         rotationX += deltaY * 0.015;
         if (rotationX < -HALF_PI) rotationX = -HALF_PI;
         if (rotationX > HALF_PI) rotationX = HALF_PI;
         orbitAroundEarth(deltaX, deltaY);
-        // Immediate draw during drag for zero-latency feedback
         render();
-        needsRedraw = false; // already drawn, skip rAF redundant draw
+        needsRedraw = false;
     }
 
     canvas.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
         isDragging = true;
+        userControlledRotation = true;
         lastMouseX = e.clientX;
         lastMouseY = e.clientY;
-        syncFromCamera();
         canvas.classList.add('dragging');
         e.preventDefault();
         e.stopPropagation();
@@ -2067,6 +2071,7 @@ function setupMiniEarthNavigation() {
             isDragging = false;
             dragEndTime = Date.now();
             canvas.classList.remove('dragging');
+            setTimeout(() => { userControlledRotation = false; }, SYNC_COOLDOWN);
         }
     });
 
@@ -2077,9 +2082,9 @@ function setupMiniEarthNavigation() {
     canvas.addEventListener('touchstart', (e) => {
         if (e.touches.length !== 1) return;
         isDragging = true;
+        userControlledRotation = true;
         lastTouchX = e.touches[0].clientX;
         lastTouchY = e.touches[0].clientY;
-        syncFromCamera();
         canvas.classList.add('dragging');
         e.preventDefault();
     });
@@ -2098,6 +2103,7 @@ function setupMiniEarthNavigation() {
             isDragging = false;
             dragEndTime = Date.now();
             canvas.classList.remove('dragging');
+            setTimeout(() => { userControlledRotation = false; }, SYNC_COOLDOWN);
         }
     });
 
@@ -2106,14 +2112,14 @@ function setupMiniEarthNavigation() {
     let lastSyncLat = 0;
     setInterval(() => {
         if (isDragging) return;
+        if (userControlledRotation) return;
         if ((Date.now() - dragEndTime) < SYNC_COOLDOWN) return;
         const camPos = viewer.camera.position;
         const dist = Cesium.Cartesian3.magnitude(camPos);
         if (dist < 1) return;
         const newLon = Math.atan2(camPos.x, camPos.z);
         const newLat = Math.asin(Math.max(-1, Math.min(1, camPos.y / dist)));
-        // Only sync+redraw if camera actually moved
-        if (Math.abs(newLon - lastSyncLon) > 0.001 || Math.abs(newLat - lastSyncLat) > 0.001) {
+        if (Math.abs(newLon - lastSyncLon) > 0.01 || Math.abs(newLat - lastSyncLat) > 0.01) {
             lastSyncLon = newLon;
             lastSyncLat = newLat;
             syncFromCamera();
