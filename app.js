@@ -1741,81 +1741,77 @@ function setupMiniEarthNavigation() {
     canvas.height = cssSize * dpr;
     ctx.scale(dpr, dpr);
 
-    // Sphere geometry
+    // Sphere geometry constants
     const RADIUS = 55;
     const CENTER_X = cssSize / 2;
     const CENTER_Y = cssSize / 2;
     const PERSPECTIVE_D = 400;
-    const SEGMENTS_LAT = 16;
-    const SEGMENTS_LON = 24;
+    const DETAIL = 30;
 
-    // Light direction (normalized, from upper-left-front)
+    // Light direction (normalized, upper-left-front)
     const lightDir = { x: -0.4, y: -0.6, z: 0.7 };
     const lightLen = Math.sqrt(lightDir.x * lightDir.x + lightDir.y * lightDir.y + lightDir.z * lightDir.z);
     lightDir.x /= lightLen; lightDir.y /= lightLen; lightDir.z /= lightLen;
 
-    // Rotation state
+    // Visual sphere rotation state (radians)
     let rotationX = 0;
     let rotationY = 0;
 
+    // Cesium orbit state (radians)
+    let orbitLon = 0;   // longitude angle around Earth Y axis
+    let orbitLat = -0.5; // latitude angle (negative = looking down)
+
     // Generate sphere vertices
     const vertices = [];
-    for (let lat = 0; lat <= SEGMENTS_LAT; lat++) {
-        const theta = (lat / SEGMENTS_LAT) * Math.PI;
+    for (let lat = 0; lat <= DETAIL; lat++) {
+        const theta = (lat / DETAIL) * Math.PI;
         const sinT = Math.sin(theta);
         const cosT = Math.cos(theta);
-        for (let lon = 0; lon <= SEGMENTS_LON; lon++) {
-            const phi = (lon / SEGMENTS_LON) * 2 * Math.PI;
+        for (let lon = 0; lon <= DETAIL; lon++) {
+            const phi = (lon / DETAIL) * 2 * Math.PI;
             vertices.push({
                 x: RADIUS * sinT * Math.cos(phi),
                 y: RADIUS * cosT,
                 z: RADIUS * sinT * Math.sin(phi),
-                lat: lat / SEGMENTS_LAT,
-                lon: lon / SEGMENTS_LON
+                lat: lat / DETAIL,
+                lon: lon / DETAIL
             });
         }
     }
 
     // Generate triangle faces
     const faces = [];
-    for (let lat = 0; lat < SEGMENTS_LAT; lat++) {
-        for (let lon = 0; lon < SEGMENTS_LON; lon++) {
-            const i0 = lat * (SEGMENTS_LON + 1) + lon;
+    for (let lat = 0; lat < DETAIL; lat++) {
+        for (let lon = 0; lon < DETAIL; lon++) {
+            const i0 = lat * (DETAIL + 1) + lon;
             const i1 = i0 + 1;
-            const i2 = i0 + (SEGMENTS_LON + 1);
+            const i2 = i0 + (DETAIL + 1);
             const i3 = i2 + 1;
             faces.push([i0, i2, i1]);
             faces.push([i1, i2, i3]);
         }
     }
 
-    // Rotation matrix helpers
+    // Rotate point by rotationX (pitch) then rotationY (yaw)
     function rotatePoint(px, py, pz) {
         const cosX = Math.cos(rotationX), sinX = Math.sin(rotationX);
         const cosY = Math.cos(rotationY), sinY = Math.sin(rotationY);
-
-        // Rotate around X axis
-        let y1 = py * cosX - pz * sinX;
-        let z1 = py * sinX + pz * cosX;
-
-        // Rotate around Y axis
-        let x2 = px * cosY + z1 * sinY;
-        let z2 = -px * sinY + z1 * cosY;
-
+        // Rotate around X
+        const y1 = py * cosX - pz * sinX;
+        const z1 = py * sinX + pz * cosX;
+        // Rotate around Y
+        const x2 = px * cosY + z1 * sinY;
+        const z2 = -px * sinY + z1 * cosY;
         return { x: x2, y: y1, z: z2 };
     }
 
-    // Perspective project
+    // Perspective projection
     function project(p) {
         const scale = PERSPECTIVE_D / (PERSPECTIVE_D + p.z);
-        return {
-            x: CENTER_X + p.x * scale,
-            y: CENTER_Y + p.y * scale,
-            scale: scale
-        };
+        return { x: CENTER_X + p.x * scale, y: CENTER_Y + p.y * scale };
     }
 
-    // Cross product for face normal
+    // Face normal from 3D rotated vertices
     function faceNormal(v0, v1, v2) {
         const ax = v1.x - v0.x, ay = v1.y - v0.y, az = v1.z - v0.z;
         const bx = v2.x - v0.x, by = v2.y - v0.y, bz = v2.z - v0.z;
@@ -1826,9 +1822,8 @@ function setupMiniEarthNavigation() {
         return { x: nx / len, y: ny / len, z: nz / len };
     }
 
-    // Determine face color based on lat/lon (simple land/ocean)
+    // Simple continent color by lat/lon
     function getFaceColor(face) {
-        // Average lat/lon of face vertices
         let avgLat = 0, avgLon = 0;
         for (const idx of face) {
             avgLat += vertices[idx].lat;
@@ -1836,83 +1831,51 @@ function setupMiniEarthNavigation() {
         }
         avgLat /= face.length;
         avgLon /= face.length;
-
-        // Simple continent mapping (lat 0=north pole, 1=south pole)
-        // Convert to geographic: latGeo in [-90, 90], lonGeo in [0, 360]
         const latGeo = 90 - avgLat * 180;
         const lonGeo = avgLon * 360;
 
-        // Approximate continent regions
         const isLand =
-            // North America
             (latGeo > 25 && latGeo < 70 && lonGeo > 210 && lonGeo < 310) ||
-            // South America
             (latGeo > -55 && latGeo < 15 && lonGeo > 270 && lonGeo < 330) ||
-            // Europe
-            (latGeo > 35 && latGeo < 70 && lonGeo > 340 || latGeo > 35 && latGeo < 70 && lonGeo < 40) ||
-            // Africa
-            (latGeo > -35 && latGeo < 35 && lonGeo > 345 || latGeo > -35 && latGeo < 35 && lonGeo > 0 && lonGeo < 50) ||
-            // Asia
+            (latGeo > 35 && latGeo < 70 && (lonGeo > 340 || lonGeo < 40)) ||
+            (latGeo > -35 && latGeo < 35 && (lonGeo > 345 || (lonGeo > 0 && lonGeo < 50))) ||
             (latGeo > 10 && latGeo < 70 && lonGeo > 40 && lonGeo < 150) ||
-            // Australia
             (latGeo > -40 && latGeo < -10 && lonGeo > 110 && lonGeo < 155) ||
-            // Antarctica
             (latGeo < -65);
 
-        if (isLand) {
-            return { r: 45, g: 120, b: 45 };  // Green land
-        }
-        return { r: 30, g: 70, b: 140 };       // Blue ocean
+        return isLand ? { r: 45, g: 120, b: 45 } : { r: 30, g: 70, b: 140 };
     }
 
-    // Render the sphere
+    // Render the 3D sphere
     function render() {
         ctx.clearRect(0, 0, cssSize, cssSize);
 
-        // Transform all vertices
         const transformed = vertices.map(v => rotatePoint(v.x, v.y, v.z));
         const projected = transformed.map(v => project(v));
 
-        // Build renderable faces with depth
         const renderFaces = [];
         for (const face of faces) {
             const v0 = transformed[face[0]];
             const v1 = transformed[face[1]];
             const v2 = transformed[face[2]];
 
-            // Face normal for backface culling
             const normal = faceNormal(v0, v1, v2);
+            if (normal.z <= 0) continue; // backface cull
 
-            // Backface cull: skip faces pointing away from camera
-            if (normal.z <= 0) continue;
-
-            // Average depth for sorting
             const avgZ = (v0.z + v1.z + v2.z) / 3;
-
-            // Lighting: dot product with light direction
             const dot = normal.x * lightDir.x + normal.y * lightDir.y + normal.z * lightDir.z;
             const brightness = Math.max(0.15, Math.min(1.0, dot * 0.7 + 0.5));
 
-            // Get base color
-            const baseColor = getFaceColor(face);
-
-            renderFaces.push({
-                face,
-                avgZ,
-                brightness,
-                baseColor
-            });
+            renderFaces.push({ face, avgZ, brightness, baseColor: getFaceColor(face) });
         }
 
-        // Depth sort: farthest first (painter's algorithm)
+        // Depth sort (painter's algorithm)
         renderFaces.sort((a, b) => b.avgZ - a.avgZ);
 
-        // Draw faces
         for (const rf of renderFaces) {
             const p0 = projected[rf.face[0]];
             const p1 = projected[rf.face[1]];
             const p2 = projected[rf.face[2]];
-
             const r = Math.round(rf.baseColor.r * rf.brightness);
             const g = Math.round(rf.baseColor.g * rf.brightness);
             const b = Math.round(rf.baseColor.b * rf.brightness);
@@ -1926,7 +1889,7 @@ function setupMiniEarthNavigation() {
             ctx.fill();
         }
 
-        // Atmosphere glow overlay
+        // Atmosphere glow
         const grad = ctx.createRadialGradient(
             CENTER_X - 15, CENTER_Y - 15, RADIUS * 0.2,
             CENTER_X, CENTER_Y, RADIUS + 8
@@ -1952,27 +1915,62 @@ function setupMiniEarthNavigation() {
         ctx.fill();
     }
 
-    // Rotate Cesium camera
-    function rotateCesiumGlobe(deltaX, deltaY) {
-        const camera = viewer.camera;
+    // Orbit camera around Earth center (physical globe spin)
+    function orbitAroundEarth(deltaX, deltaY) {
         const sensitivity = 0.005;
 
-        const newHeading = camera.heading - deltaX * sensitivity;
-        const minPitch = -Cesium.Math.PI_OVER_TWO + 0.1;
-        const maxPitch = Cesium.Math.PI_OVER_TWO - 0.1;
-        const newPitch = Cesium.Math.clamp(
-            camera.pitch + deltaY * sensitivity,
-            minPitch,
-            maxPitch
-        );
+        orbitLon += deltaX * sensitivity;
+        orbitLat -= deltaY * sensitivity;
 
-        camera.setView({
+        // Clamp latitude to avoid flipping over poles
+        const minLat = -Math.PI / 2 + 0.05;
+        const maxLat = Math.PI / 2 - 0.05;
+        orbitLat = Math.max(minLat, Math.min(maxLat, orbitLat));
+
+        // Get current distance from Earth center
+        const camPos = viewer.camera.position;
+        const dist = Cesium.Cartesian3.magnitude(camPos);
+
+        // Compute new camera position on orbit sphere
+        const cosLat = Math.cos(orbitLat);
+        const newX = dist * cosLat * Math.sin(orbitLon);
+        const newY = dist * Math.sin(orbitLat);
+        const newZ = dist * cosLat * Math.cos(orbitLon);
+
+        // Direction from camera to Earth center (for orientation)
+        const direction = new Cesium.Cartesian3(-newX, -newY, -newZ);
+        Cesium.Cartesian3.normalize(direction, direction);
+
+        // Up vector (world up projected to be perpendicular to direction)
+        const worldUp = new Cesium.Cartesian3(0, 1, 0);
+        const right = Cesium.Cartesian3.cross(direction, worldUp, new Cesium.Cartesian3());
+        Cesium.Cartesian3.normalize(right, right);
+        const up = Cesium.Cartesian3.cross(right, direction, new Cesium.Cartesian3());
+        Cesium.Cartesian3.normalize(up, up);
+
+        viewer.camera.setView({
+            destination: new Cesium.Cartesian3(newX, newY, newZ),
             orientation: {
-                heading: newHeading,
-                pitch: newPitch,
-                roll: 0.0
+                direction: direction,
+                up: up
             }
         });
+    }
+
+    // Derive orbit angles from current Cesium camera position
+    function syncFromCamera() {
+        const camPos = viewer.camera.position;
+        const dist = Cesium.Cartesian3.magnitude(camPos);
+        if (dist < 1) return;
+
+        // Extract spherical angles from camera position
+        orbitLon = Math.atan2(camPos.x, camPos.z);
+        orbitLat = Math.asin(Math.max(-1, Math.min(1, camPos.y / dist)));
+
+        // Sync visual sphere rotation to match
+        rotationY = -orbitLon;
+        rotationX = orbitLat;
+        rotationX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, rotationX));
     }
 
     // Drag interaction
@@ -1980,11 +1978,23 @@ function setupMiniEarthNavigation() {
     let lastMouseX = 0;
     let lastMouseY = 0;
 
+    function handleDrag(deltaX, deltaY) {
+        // Update visual sphere
+        rotationY -= deltaX * 0.01;
+        rotationX += deltaY * 0.01;
+        rotationX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, rotationX));
+
+        // Orbit Cesium camera around Earth
+        orbitAroundEarth(deltaX, deltaY);
+        render();
+    }
+
     canvas.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
         isDragging = true;
         lastMouseX = e.clientX;
         lastMouseY = e.clientY;
+        syncFromCamera(); // snap orbit state to current camera before dragging
         canvas.classList.add('dragging');
         e.preventDefault();
         e.stopPropagation();
@@ -1994,14 +2004,7 @@ function setupMiniEarthNavigation() {
         if (!isDragging) return;
         const deltaX = e.clientX - lastMouseX;
         const deltaY = e.clientY - lastMouseY;
-
-        rotationY += deltaX * 0.01;
-        rotationX += deltaY * 0.01;
-        rotationX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, rotationX));
-
-        rotateCesiumGlobe(deltaX, deltaY);
-        render();
-
+        handleDrag(deltaX, deltaY);
         lastMouseX = e.clientX;
         lastMouseY = e.clientY;
         e.preventDefault();
@@ -2025,6 +2028,7 @@ function setupMiniEarthNavigation() {
         isDragging = true;
         lastTouchX = touch.clientX;
         lastTouchY = touch.clientY;
+        syncFromCamera();
         canvas.classList.add('dragging');
         e.preventDefault();
     });
@@ -2034,14 +2038,7 @@ function setupMiniEarthNavigation() {
         const touch = e.touches[0];
         const deltaX = touch.clientX - lastTouchX;
         const deltaY = touch.clientY - lastTouchY;
-
-        rotationY += deltaX * 0.01;
-        rotationX += deltaY * 0.01;
-        rotationX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, rotationX));
-
-        rotateCesiumGlobe(deltaX, deltaY);
-        render();
-
+        handleDrag(deltaX, deltaY);
         lastTouchX = touch.clientX;
         lastTouchY = touch.clientY;
         e.preventDefault();
@@ -2054,21 +2051,26 @@ function setupMiniEarthNavigation() {
         }
     });
 
-    // Sync sphere rotation with Cesium camera periodically
-    function syncWithCamera() {
-        if (isDragging) return;
-        const camera = viewer.camera;
-        rotationY = camera.heading;
-        rotationX = -(camera.pitch + Cesium.Math.PI_OVER_TWO);
-        rotationX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, rotationX));
-        render();
+    // Lightweight sync: update sphere visual when not dragging
+    let syncCounter = 0;
+    const origAnimate = window._miniEarthSyncHook;
+    function syncOnFrame() {
+        if (!isDragging && ++syncCounter % 15 === 0) {
+            syncFromCamera();
+            render();
+        }
     }
+    // Hook into existing requestAnimationFrame loop via a lightweight check
+    setInterval(() => {
+        if (!isDragging) {
+            syncFromCamera();
+            render();
+        }
+    }, 500);
 
-    // Sync every 10 frames via animate hook, or use interval
-    setInterval(syncWithCamera, 200);
-
-    // Initial render
-    syncWithCamera();
+    // Initial sync and render
+    syncFromCamera();
+    render();
 }
 
 // ============================================================================

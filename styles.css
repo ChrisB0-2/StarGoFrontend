@@ -936,12 +936,14 @@ body {
    ============================================================================ */
 #miniEarthContainer {
     position: fixed;
-    left: 30px;
-    bottom: 30px;
+    top: 80px;
+    right: 30px;
     z-index: 1001;
-    width: 140px;
-    height: 160px;
     pointer-events: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
 }
 
 .mini-earth-canvas {
@@ -974,7 +976,6 @@ body {
 
 .earth-label {
     text-align: center;
-    margin-top: 6px;
     font-size: 10px;
     color: rgba(255, 255, 255, 0.6);
     text-transform: uppercase;
@@ -986,10 +987,8 @@ body {
 /* Responsive */
 @media (max-width: 768px) {
     #miniEarthContainer {
-        left: 15px;
-        bottom: 15px;
-        width: 100px;
-        height: 120px;
+        top: 60px;
+        right: 15px;
     }
 
     .mini-earth-canvas {
