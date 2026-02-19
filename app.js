@@ -281,8 +281,8 @@ function init() {
     // Setup UI event handlers
     setupEventHandlers();
 
-    // Setup trackball navigation
-    setupTrackballNavigation();
+    // Setup mini Earth navigation
+    setupMiniEarthNavigation();
 
     // Setup satellite click handler
     setupClickHandler();
@@ -1726,37 +1726,35 @@ function setupEventHandlers() {
 }
 
 // ============================================================================
-// Trackball Navigation Control
+// Mini Earth Navigation Sphere
 // ============================================================================
 
-function setupTrackballNavigation() {
-    const trackball = document.getElementById('trackball');
-    if (!trackball) return;
+function setupMiniEarthNavigation() {
+    const miniEarth = document.getElementById('miniEarth');
+    const earthSphere = miniEarth?.querySelector('.earth-sphere');
+
+    if (!miniEarth || !earthSphere) return;
 
     let isDragging = false;
     let lastMouseX = 0;
     let lastMouseY = 0;
+    let rotationX = 0;
+    let rotationY = 0;
 
-    // Rotate camera around Earth center
-    function rotateGlobe(deltaX, deltaY) {
+    // Rotate Cesium camera around Earth center
+    function rotateCesiumGlobe(deltaX, deltaY) {
         const camera = viewer.camera;
-        const sensitivity = 0.003;
-
-        const position = camera.position;
-        const center = Cesium.Cartesian3.ZERO;
+        const sensitivity = 0.005;
 
         const headingDelta = -deltaX * sensitivity;
         const pitchDelta = deltaY * sensitivity;
 
-        const currentHeading = camera.heading;
-        const currentPitch = camera.pitch;
-
-        const newHeading = currentHeading + headingDelta;
+        const newHeading = camera.heading + headingDelta;
 
         const minPitch = -Cesium.Math.PI_OVER_TWO + 0.1;
         const maxPitch = Cesium.Math.PI_OVER_TWO - 0.1;
         const newPitch = Cesium.Math.clamp(
-            currentPitch + pitchDelta,
+            camera.pitch + pitchDelta,
             minPitch,
             maxPitch
         );
@@ -1770,13 +1768,22 @@ function setupTrackballNavigation() {
         });
     }
 
+    // Update visual sphere rotation
+    function updateSphereRotation(deltaX, deltaY) {
+        rotationY += deltaX * 0.5;
+        rotationX += deltaY * 0.5;
+        rotationX = Math.max(-90, Math.min(90, rotationX));
+        earthSphere.style.transform =
+            `rotateX(${rotationX}deg) rotateY(${rotationY}deg)`;
+    }
+
     // Mouse down - start drag
-    trackball.addEventListener('mousedown', (e) => {
+    miniEarth.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
         isDragging = true;
         lastMouseX = e.clientX;
         lastMouseY = e.clientY;
-        trackball.classList.add('dragging');
+        miniEarth.classList.add('dragging');
         e.preventDefault();
         e.stopPropagation();
     });
@@ -1786,7 +1793,8 @@ function setupTrackballNavigation() {
         if (!isDragging) return;
         const deltaX = e.clientX - lastMouseX;
         const deltaY = e.clientY - lastMouseY;
-        rotateGlobe(deltaX, deltaY);
+        rotateCesiumGlobe(deltaX, deltaY);
+        updateSphereRotation(deltaX, deltaY);
         lastMouseX = e.clientX;
         lastMouseY = e.clientY;
         e.preventDefault();
@@ -1797,7 +1805,7 @@ function setupTrackballNavigation() {
         if (e.button !== 0) return;
         if (isDragging) {
             isDragging = false;
-            trackball.classList.remove('dragging');
+            miniEarth.classList.remove('dragging');
         }
     });
 
@@ -1805,13 +1813,13 @@ function setupTrackballNavigation() {
     let lastTouchX = 0;
     let lastTouchY = 0;
 
-    trackball.addEventListener('touchstart', (e) => {
+    miniEarth.addEventListener('touchstart', (e) => {
         if (e.touches.length !== 1) return;
         const touch = e.touches[0];
         isDragging = true;
         lastTouchX = touch.clientX;
         lastTouchY = touch.clientY;
-        trackball.classList.add('dragging');
+        miniEarth.classList.add('dragging');
         e.preventDefault();
     });
 
@@ -1820,7 +1828,8 @@ function setupTrackballNavigation() {
         const touch = e.touches[0];
         const deltaX = touch.clientX - lastTouchX;
         const deltaY = touch.clientY - lastTouchY;
-        rotateGlobe(deltaX, deltaY);
+        rotateCesiumGlobe(deltaX, deltaY);
+        updateSphereRotation(deltaX, deltaY);
         lastTouchX = touch.clientX;
         lastTouchY = touch.clientY;
         e.preventDefault();
@@ -1829,9 +1838,20 @@ function setupTrackballNavigation() {
     document.addEventListener('touchend', () => {
         if (isDragging) {
             isDragging = false;
-            trackball.classList.remove('dragging');
+            miniEarth.classList.remove('dragging');
         }
     });
+
+    // Sync sphere rotation with Cesium camera on initialization
+    function syncSphereWithCamera() {
+        const camera = viewer.camera;
+        rotationY = Cesium.Math.toDegrees(camera.heading);
+        rotationX = Cesium.Math.toDegrees(camera.pitch) + 90;
+        earthSphere.style.transform =
+            `rotateX(${rotationX}deg) rotateY(${rotationY}deg)`;
+    }
+
+    setTimeout(syncSphereWithCamera, 100);
 }
 
 // ============================================================================
