@@ -281,8 +281,8 @@ function init() {
     // Setup UI event handlers
     setupEventHandlers();
 
-    // Setup navigation panel
-    setupNavigationPanel();
+    // Setup trackball navigation
+    setupTrackballNavigation();
 
     // Setup satellite click handler
     setupClickHandler();
@@ -1726,108 +1726,112 @@ function setupEventHandlers() {
 }
 
 // ============================================================================
-// Side Navigation Panel
+// Trackball Navigation Control
 // ============================================================================
 
-function updateCompass() {
-    const compassNeedle = document.getElementById('compassNeedle');
-    if (!compassNeedle || !viewer) return;
+function setupTrackballNavigation() {
+    const trackball = document.getElementById('trackball');
+    if (!trackball) return;
 
-    const heading = Cesium.Math.toDegrees(viewer.camera.heading);
-    compassNeedle.style.transform = `translate(-50%, -50%) rotate(${-heading}deg)`;
-}
+    let isDragging = false;
+    let lastMouseX = 0;
+    let lastMouseY = 0;
 
-function setupNavigationPanel() {
-    const navPanel = document.getElementById('navPanel');
-    const toggleBtn = document.getElementById('toggleNavPanel');
+    // Rotate camera around Earth center
+    function rotateGlobe(deltaX, deltaY) {
+        const camera = viewer.camera;
+        const sensitivity = 0.003;
 
-    // Toggle panel collapse
-    if (toggleBtn) {
-        toggleBtn.addEventListener('click', () => {
-            navPanel.classList.toggle('collapsed');
-            toggleBtn.textContent = navPanel.classList.contains('collapsed') ? '\u25BA' : '\u25C4';
+        const position = camera.position;
+        const center = Cesium.Cartesian3.ZERO;
+
+        const headingDelta = -deltaX * sensitivity;
+        const pitchDelta = deltaY * sensitivity;
+
+        const currentHeading = camera.heading;
+        const currentPitch = camera.pitch;
+
+        const newHeading = currentHeading + headingDelta;
+
+        const minPitch = -Cesium.Math.PI_OVER_TWO + 0.1;
+        const maxPitch = Cesium.Math.PI_OVER_TWO - 0.1;
+        const newPitch = Cesium.Math.clamp(
+            currentPitch + pitchDelta,
+            minPitch,
+            maxPitch
+        );
+
+        camera.setView({
+            orientation: {
+                heading: newHeading,
+                pitch: newPitch,
+                roll: 0.0
+            }
         });
     }
 
-    // Zoom In
-    const zoomInBtn = document.getElementById('navZoomIn');
-    if (zoomInBtn) {
-        zoomInBtn.addEventListener('click', () => {
-            viewer.camera.zoomIn(viewer.camera.positionCartographic.height * 0.3);
-        });
-    }
+    // Mouse down - start drag
+    trackball.addEventListener('mousedown', (e) => {
+        if (e.button !== 0) return;
+        isDragging = true;
+        lastMouseX = e.clientX;
+        lastMouseY = e.clientY;
+        trackball.classList.add('dragging');
+        e.preventDefault();
+        e.stopPropagation();
+    });
 
-    // Zoom Out
-    const zoomOutBtn = document.getElementById('navZoomOut');
-    if (zoomOutBtn) {
-        zoomOutBtn.addEventListener('click', () => {
-            viewer.camera.zoomOut(viewer.camera.positionCartographic.height * 0.3);
-        });
-    }
+    // Mouse move - rotate globe
+    document.addEventListener('mousemove', (e) => {
+        if (!isDragging) return;
+        const deltaX = e.clientX - lastMouseX;
+        const deltaY = e.clientY - lastMouseY;
+        rotateGlobe(deltaX, deltaY);
+        lastMouseX = e.clientX;
+        lastMouseY = e.clientY;
+        e.preventDefault();
+    });
 
-    // Rotate Left
-    const rotateLeftBtn = document.getElementById('navRotateLeft');
-    if (rotateLeftBtn) {
-        rotateLeftBtn.addEventListener('click', () => {
-            viewer.camera.lookRight(-0.1);
-        });
-    }
+    // Mouse up - end drag
+    document.addEventListener('mouseup', (e) => {
+        if (e.button !== 0) return;
+        if (isDragging) {
+            isDragging = false;
+            trackball.classList.remove('dragging');
+        }
+    });
 
-    // Rotate Right
-    const rotateRightBtn = document.getElementById('navRotateRight');
-    if (rotateRightBtn) {
-        rotateRightBtn.addEventListener('click', () => {
-            viewer.camera.lookRight(0.1);
-        });
-    }
+    // Touch support
+    let lastTouchX = 0;
+    let lastTouchY = 0;
 
-    // Look Up
-    const rotateUpBtn = document.getElementById('navRotateUp');
-    if (rotateUpBtn) {
-        rotateUpBtn.addEventListener('click', () => {
-            viewer.camera.lookUp(0.1);
-        });
-    }
+    trackball.addEventListener('touchstart', (e) => {
+        if (e.touches.length !== 1) return;
+        const touch = e.touches[0];
+        isDragging = true;
+        lastTouchX = touch.clientX;
+        lastTouchY = touch.clientY;
+        trackball.classList.add('dragging');
+        e.preventDefault();
+    });
 
-    // Look Down
-    const rotateDownBtn = document.getElementById('navRotateDown');
-    if (rotateDownBtn) {
-        rotateDownBtn.addEventListener('click', () => {
-            viewer.camera.lookUp(-0.1);
-        });
-    }
+    document.addEventListener('touchmove', (e) => {
+        if (!isDragging || e.touches.length !== 1) return;
+        const touch = e.touches[0];
+        const deltaX = touch.clientX - lastTouchX;
+        const deltaY = touch.clientY - lastTouchY;
+        rotateGlobe(deltaX, deltaY);
+        lastTouchX = touch.clientX;
+        lastTouchY = touch.clientY;
+        e.preventDefault();
+    });
 
-    // Home/Reset View
-    const homeBtn = document.getElementById('navHome');
-    if (homeBtn) {
-        homeBtn.addEventListener('click', () => {
-            viewer.camera.flyTo({
-                destination: Cesium.Cartesian3.fromDegrees(0.0, 0.0, 20000000),
-                orientation: {
-                    heading: 0.0,
-                    pitch: -Cesium.Math.PI_OVER_TWO,
-                    roll: 0.0
-                },
-                duration: 2.0
-            });
-        });
-    }
-
-    // Tilt Up
-    const tiltUpBtn = document.getElementById('navTiltUp');
-    if (tiltUpBtn) {
-        tiltUpBtn.addEventListener('click', () => {
-            viewer.camera.lookUp(0.1);
-        });
-    }
-
-    // Tilt Down
-    const tiltDownBtn = document.getElementById('navTiltDown');
-    if (tiltDownBtn) {
-        tiltDownBtn.addEventListener('click', () => {
-            viewer.camera.lookUp(-0.1);
-        });
-    }
+    document.addEventListener('touchend', () => {
+        if (isDragging) {
+            isDragging = false;
+            trackball.classList.remove('dragging');
+        }
+    });
 }
 
 // ============================================================================
@@ -2295,11 +2299,6 @@ function animate() {
         if (keysPressed.arrowright) camera.lookRight(CAMERA_ROTATION_SPEED);
         if (keysPressed.arrowup) camera.lookUp(CAMERA_ROTATION_SPEED);
         if (keysPressed.arrowdown) camera.lookDown(CAMERA_ROTATION_SPEED);
-    }
-
-    // Update compass every 5 frames
-    if (frameCount % 5 === 0) {
-        updateCompass();
     }
 
     // Phase 3: combined orbit visibility, depth scaling, and LOD (low frequency)
