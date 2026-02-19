@@ -2007,25 +2007,27 @@ function setupMiniEarthNavigation() {
         });
     }
 
-    // ---- Camera sync ----
+    // ---- Camera sync (snap-back resistant) ----
     function syncFromCamera() {
         const camPos = viewer.camera.position;
         const dist = Cesium.Cartesian3.magnitude(camPos);
         if (dist < 1) return;
 
         orbitLon = Math.atan2(camPos.x, camPos.z);
-        orbitLat = Math.asin(camPos.y / dist);
-        if (orbitLat < -1) orbitLat = -1;
-        if (orbitLat > 1) orbitLat = 1;
+        orbitLat = Math.asin(Math.max(-1, Math.min(1, camPos.y / dist)));
 
-        rotationY = -orbitLon;
-        rotationX = orbitLat;
-        if (rotationX < -HALF_PI) rotationX = -HALF_PI;
-        if (rotationX > HALF_PI) rotationX = HALF_PI;
+        const targetRotY = -orbitLon;
+        const targetRotX = Math.max(-HALF_PI, Math.min(HALF_PI, orbitLat));
+
+        // Only update visual rotation if difference is significant (prevents micro snap-back)
+        if (Math.abs(targetRotY - rotationY) > 0.05) rotationY = targetRotY;
+        if (Math.abs(targetRotX - rotationX) > 0.05) rotationX = targetRotX;
     }
 
     // ---- Drag handling ----
     let isDragging = false;
+    let dragEndTime = 0;
+    const SYNC_COOLDOWN = 300;
     let lastMouseX = 0;
     let lastMouseY = 0;
 
@@ -2063,6 +2065,7 @@ function setupMiniEarthNavigation() {
         if (e.button !== 0) return;
         if (isDragging) {
             isDragging = false;
+            dragEndTime = Date.now();
             canvas.classList.remove('dragging');
         }
     });
@@ -2093,6 +2096,7 @@ function setupMiniEarthNavigation() {
     document.addEventListener('touchend', () => {
         if (isDragging) {
             isDragging = false;
+            dragEndTime = Date.now();
             canvas.classList.remove('dragging');
         }
     });
@@ -2102,11 +2106,12 @@ function setupMiniEarthNavigation() {
     let lastSyncLat = 0;
     setInterval(() => {
         if (isDragging) return;
+        if ((Date.now() - dragEndTime) < SYNC_COOLDOWN) return;
         const camPos = viewer.camera.position;
         const dist = Cesium.Cartesian3.magnitude(camPos);
         if (dist < 1) return;
         const newLon = Math.atan2(camPos.x, camPos.z);
-        const newLat = Math.asin(camPos.y / dist);
+        const newLat = Math.asin(Math.max(-1, Math.min(1, camPos.y / dist)));
         // Only sync+redraw if camera actually moved
         if (Math.abs(newLon - lastSyncLon) > 0.001 || Math.abs(newLat - lastSyncLat) > 0.001) {
             lastSyncLon = newLon;
