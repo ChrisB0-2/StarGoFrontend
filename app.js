@@ -1726,7 +1726,7 @@ function setupEventHandlers() {
 }
 
 // ============================================================================
-// Mini Earth Navigation Sphere (Canvas 3D)
+// Mini Earth Navigation Sphere (Canvas 3D) — Optimized
 // ============================================================================
 
 function setupMiniEarthNavigation() {
@@ -1741,99 +1741,83 @@ function setupMiniEarthNavigation() {
     canvas.height = cssSize * dpr;
     ctx.scale(dpr, dpr);
 
-    // Sphere geometry constants
+    // Constants
     const RADIUS = 55;
-    const CENTER_X = cssSize / 2;
-    const CENTER_Y = cssSize / 2;
-    const PERSPECTIVE_D = 400;
-    const DETAIL = 30;
+    const CX = cssSize / 2;
+    const CY = cssSize / 2;
+    const PERSP = 400;
+    const DETAIL = 12;
+    const HALF_PI = Math.PI / 2;
+    const TWO_PI = Math.PI * 2;
 
-    // Light direction (normalized, upper-left-front)
-    const lightDir = { x: -0.4, y: -0.6, z: 0.7 };
-    const lightLen = Math.sqrt(lightDir.x * lightDir.x + lightDir.y * lightDir.y + lightDir.z * lightDir.z);
-    lightDir.x /= lightLen; lightDir.y /= lightLen; lightDir.z /= lightLen;
+    // Precomputed light direction (normalized)
+    const lx = -0.4, ly = -0.6, lz = 0.7;
+    const ll = Math.sqrt(lx * lx + ly * ly + lz * lz);
+    const LDX = lx / ll, LDY = ly / ll, LDZ = lz / ll;
 
-    // Visual sphere rotation state (radians)
+    // Visual rotation state
     let rotationX = 0;
     let rotationY = 0;
 
-    // Cesium orbit state (radians)
-    let orbitLon = 0;   // longitude angle around Earth Y axis
-    let orbitLat = -0.5; // latitude angle (negative = looking down)
+    // Cesium orbit state
+    let orbitLon = 0;
+    let orbitLat = -0.5;
 
-    // Generate sphere vertices
-    const vertices = [];
+    // Redraw flag
+    let needsRedraw = true;
+
+    // ---- Precompute geometry once ----
+    const vertCount = (DETAIL + 1) * (DETAIL + 1);
+    // Source vertices: flat arrays [x, y, z] and metadata [latNorm, lonNorm]
+    const srcX = new Float32Array(vertCount);
+    const srcY = new Float32Array(vertCount);
+    const srcZ = new Float32Array(vertCount);
+    const vLatNorm = new Float32Array(vertCount);
+    const vLonNorm = new Float32Array(vertCount);
+
+    let vi = 0;
     for (let lat = 0; lat <= DETAIL; lat++) {
         const theta = (lat / DETAIL) * Math.PI;
         const sinT = Math.sin(theta);
         const cosT = Math.cos(theta);
+        const latN = lat / DETAIL;
         for (let lon = 0; lon <= DETAIL; lon++) {
-            const phi = (lon / DETAIL) * 2 * Math.PI;
-            vertices.push({
-                x: RADIUS * sinT * Math.cos(phi),
-                y: RADIUS * cosT,
-                z: RADIUS * sinT * Math.sin(phi),
-                lat: lat / DETAIL,
-                lon: lon / DETAIL
-            });
+            const phi = (lon / DETAIL) * TWO_PI;
+            srcX[vi] = RADIUS * sinT * Math.cos(phi);
+            srcY[vi] = RADIUS * cosT;
+            srcZ[vi] = RADIUS * sinT * Math.sin(phi);
+            vLatNorm[vi] = latN;
+            vLonNorm[vi] = lon / DETAIL;
+            vi++;
         }
     }
 
-    // Generate triangle faces
-    const faces = [];
+    // Face indices (flat: every 3 entries = one triangle)
+    const faceCount = DETAIL * DETAIL * 2;
+    const faceIdx = new Uint16Array(faceCount * 3);
+    let fi = 0;
     for (let lat = 0; lat < DETAIL; lat++) {
         for (let lon = 0; lon < DETAIL; lon++) {
             const i0 = lat * (DETAIL + 1) + lon;
             const i1 = i0 + 1;
             const i2 = i0 + (DETAIL + 1);
             const i3 = i2 + 1;
-            faces.push([i0, i2, i1]);
-            faces.push([i1, i2, i3]);
+            faceIdx[fi++] = i0; faceIdx[fi++] = i2; faceIdx[fi++] = i1;
+            faceIdx[fi++] = i1; faceIdx[fi++] = i2; faceIdx[fi++] = i3;
         }
     }
 
-    // Rotate point by rotationX (pitch) then rotationY (yaw)
-    function rotatePoint(px, py, pz) {
-        const cosX = Math.cos(rotationX), sinX = Math.sin(rotationX);
-        const cosY = Math.cos(rotationY), sinY = Math.sin(rotationY);
-        // Rotate around X
-        const y1 = py * cosX - pz * sinX;
-        const z1 = py * sinX + pz * cosX;
-        // Rotate around Y
-        const x2 = px * cosY + z1 * sinY;
-        const z2 = -px * sinY + z1 * cosY;
-        return { x: x2, y: y1, z: z2 };
-    }
-
-    // Perspective projection
-    function project(p) {
-        const scale = PERSPECTIVE_D / (PERSPECTIVE_D + p.z);
-        return { x: CENTER_X + p.x * scale, y: CENTER_Y + p.y * scale };
-    }
-
-    // Face normal from 3D rotated vertices
-    function faceNormal(v0, v1, v2) {
-        const ax = v1.x - v0.x, ay = v1.y - v0.y, az = v1.z - v0.z;
-        const bx = v2.x - v0.x, by = v2.y - v0.y, bz = v2.z - v0.z;
-        const nx = ay * bz - az * by;
-        const ny = az * bx - ax * bz;
-        const nz = ax * by - ay * bx;
-        const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
-        return { x: nx / len, y: ny / len, z: nz / len };
-    }
-
-    // Simple continent color by lat/lon
-    function getFaceColor(face) {
-        let avgLat = 0, avgLon = 0;
-        for (const idx of face) {
-            avgLat += vertices[idx].lat;
-            avgLon += vertices[idx].lon;
-        }
-        avgLat /= face.length;
-        avgLon /= face.length;
+    // Precompute face colors (land/ocean) — static, never changes
+    const faceColorR = new Uint8Array(faceCount);
+    const faceColorG = new Uint8Array(faceCount);
+    const faceColorB = new Uint8Array(faceCount);
+    for (let f = 0; f < faceCount; f++) {
+        const base = f * 3;
+        const a0 = faceIdx[base], a1 = faceIdx[base + 1], a2 = faceIdx[base + 2];
+        const avgLat = (vLatNorm[a0] + vLatNorm[a1] + vLatNorm[a2]) / 3;
+        const avgLon = (vLonNorm[a0] + vLonNorm[a1] + vLonNorm[a2]) / 3;
         const latGeo = 90 - avgLat * 180;
         const lonGeo = avgLon * 360;
-
         const isLand =
             (latGeo > 25 && latGeo < 70 && lonGeo > 210 && lonGeo < 310) ||
             (latGeo > -55 && latGeo < 15 && lonGeo > 270 && lonGeo < 330) ||
@@ -1842,151 +1826,216 @@ function setupMiniEarthNavigation() {
             (latGeo > 10 && latGeo < 70 && lonGeo > 40 && lonGeo < 150) ||
             (latGeo > -40 && latGeo < -10 && lonGeo > 110 && lonGeo < 155) ||
             (latGeo < -65);
-
-        return isLand ? { r: 45, g: 120, b: 45 } : { r: 30, g: 70, b: 140 };
+        faceColorR[f] = isLand ? 45 : 30;
+        faceColorG[f] = isLand ? 120 : 70;
+        faceColorB[f] = isLand ? 45 : 140;
     }
 
-    // Render the 3D sphere
+    // Reusable transformed vertex buffers (avoid per-frame allocation)
+    const txX = new Float32Array(vertCount);
+    const txY = new Float32Array(vertCount);
+    const txZ = new Float32Array(vertCount);
+    // Projected coordinates
+    const pjX = new Float32Array(vertCount);
+    const pjY = new Float32Array(vertCount);
+    // Sortable face buffer: [faceIndex, avgZ] interleaved — reuse array
+    const sortBuf = new Float64Array(faceCount * 2);
+    // Temp sort index array
+    const sortIndices = new Uint16Array(faceCount);
+
+    // ---- Render ----
     function render() {
         ctx.clearRect(0, 0, cssSize, cssSize);
 
-        const transformed = vertices.map(v => rotatePoint(v.x, v.y, v.z));
-        const projected = transformed.map(v => project(v));
+        // Cache trig for this frame
+        const cosRX = Math.cos(rotationX), sinRX = Math.sin(rotationX);
+        const cosRY = Math.cos(rotationY), sinRY = Math.sin(rotationY);
 
-        const renderFaces = [];
-        for (const face of faces) {
-            const v0 = transformed[face[0]];
-            const v1 = transformed[face[1]];
-            const v2 = transformed[face[2]];
-
-            const normal = faceNormal(v0, v1, v2);
-            if (normal.z <= 0) continue; // backface cull
-
-            const avgZ = (v0.z + v1.z + v2.z) / 3;
-            const dot = normal.x * lightDir.x + normal.y * lightDir.y + normal.z * lightDir.z;
-            const brightness = Math.max(0.15, Math.min(1.0, dot * 0.7 + 0.5));
-
-            renderFaces.push({ face, avgZ, brightness, baseColor: getFaceColor(face) });
+        // Transform + project all vertices
+        for (let i = 0; i < vertCount; i++) {
+            const px = srcX[i], py = srcY[i], pz = srcZ[i];
+            // Rotate X
+            const y1 = py * cosRX - pz * sinRX;
+            const z1 = py * sinRX + pz * cosRX;
+            // Rotate Y
+            const x2 = px * cosRY + z1 * sinRY;
+            const z2 = -px * sinRY + z1 * cosRY;
+            txX[i] = x2; txY[i] = y1; txZ[i] = z2;
+            // Project
+            const scale = PERSP / (PERSP + z2);
+            pjX[i] = CX + x2 * scale;
+            pjY[i] = CY + y1 * scale;
         }
 
-        // Depth sort (painter's algorithm)
-        renderFaces.sort((a, b) => b.avgZ - a.avgZ);
+        // Build sortable face list with backface culling
+        let visCount = 0;
+        for (let f = 0; f < faceCount; f++) {
+            const base = f * 3;
+            const i0 = faceIdx[base], i1 = faceIdx[base + 1], i2 = faceIdx[base + 2];
+            const v0x = txX[i0], v0y = txY[i0], v0z = txZ[i0];
+            const v1x = txX[i1], v1y = txY[i1], v1z = txZ[i1];
+            const v2x = txX[i2], v2y = txY[i2], v2z = txZ[i2];
 
-        for (const rf of renderFaces) {
-            const p0 = projected[rf.face[0]];
-            const p1 = projected[rf.face[1]];
-            const p2 = projected[rf.face[2]];
-            const r = Math.round(rf.baseColor.r * rf.brightness);
-            const g = Math.round(rf.baseColor.g * rf.brightness);
-            const b = Math.round(rf.baseColor.b * rf.brightness);
+            // Cross product for normal (only need z component for backface cull)
+            const ax = v1x - v0x, ay = v1y - v0y, az = v1z - v0z;
+            const bx = v2x - v0x, by = v2y - v0y, bz = v2z - v0z;
+            const nz = ax * by - ay * bx;
+            if (nz <= 0) continue; // backface
+
+            // Full normal for lighting
+            const nx = ay * bz - az * by;
+            const ny = az * bx - ax * bz;
+            const nLen = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+
+            // Lighting
+            const dot = (nx / nLen) * LDX + (ny / nLen) * LDY + (nz / nLen) * LDZ;
+            const brightness = dot * 0.7 + 0.5;
+            const bright = brightness < 0.15 ? 0.15 : brightness > 1.0 ? 1.0 : brightness;
+
+            // Store: index and avgZ for sorting, brightness packed into sortBuf
+            const slot = visCount * 2;
+            // Pack face index and brightness into one slot pair
+            // We'll use sortIndices for the face index and sortBuf for avgZ + brightness
+            sortIndices[visCount] = f;
+            sortBuf[slot] = (v0z + v1z + v2z) / 3; // avgZ
+            sortBuf[slot + 1] = bright;
+            visCount++;
+        }
+
+        // Depth sort (farthest first) — simple insertion sort for small N
+        for (let i = 1; i < visCount; i++) {
+            const keyZ = sortBuf[i * 2];
+            const keyB = sortBuf[i * 2 + 1];
+            const keyI = sortIndices[i];
+            let j = i - 1;
+            while (j >= 0 && sortBuf[j * 2] < keyZ) {
+                sortBuf[(j + 1) * 2] = sortBuf[j * 2];
+                sortBuf[(j + 1) * 2 + 1] = sortBuf[j * 2 + 1];
+                sortIndices[j + 1] = sortIndices[j];
+                j--;
+            }
+            sortBuf[(j + 1) * 2] = keyZ;
+            sortBuf[(j + 1) * 2 + 1] = keyB;
+            sortIndices[j + 1] = keyI;
+        }
+
+        // Draw faces
+        for (let s = 0; s < visCount; s++) {
+            const f = sortIndices[s];
+            const bright = sortBuf[s * 2 + 1];
+            const base = f * 3;
+            const i0 = faceIdx[base], i1 = faceIdx[base + 1], i2 = faceIdx[base + 2];
+
+            const r = (faceColorR[f] * bright + 0.5) | 0;
+            const g = (faceColorG[f] * bright + 0.5) | 0;
+            const b = (faceColorB[f] * bright + 0.5) | 0;
 
             ctx.beginPath();
-            ctx.moveTo(p0.x, p0.y);
-            ctx.lineTo(p1.x, p1.y);
-            ctx.lineTo(p2.x, p2.y);
+            ctx.moveTo(pjX[i0], pjY[i0]);
+            ctx.lineTo(pjX[i1], pjY[i1]);
+            ctx.lineTo(pjX[i2], pjY[i2]);
             ctx.closePath();
             ctx.fillStyle = `rgb(${r},${g},${b})`;
             ctx.fill();
         }
 
         // Atmosphere glow
-        const grad = ctx.createRadialGradient(
-            CENTER_X - 15, CENTER_Y - 15, RADIUS * 0.2,
-            CENTER_X, CENTER_Y, RADIUS + 8
-        );
-        grad.addColorStop(0, 'rgba(150, 200, 255, 0.08)');
-        grad.addColorStop(0.7, 'rgba(74, 158, 255, 0.05)');
-        grad.addColorStop(1, 'rgba(74, 158, 255, 0.15)');
+        const grad = ctx.createRadialGradient(CX - 15, CY - 15, RADIUS * 0.2, CX, CY, RADIUS + 8);
+        grad.addColorStop(0, 'rgba(150,200,255,0.08)');
+        grad.addColorStop(0.7, 'rgba(74,158,255,0.05)');
+        grad.addColorStop(1, 'rgba(74,158,255,0.15)');
         ctx.beginPath();
-        ctx.arc(CENTER_X, CENTER_Y, RADIUS + 8, 0, Math.PI * 2);
+        ctx.arc(CX, CY, RADIUS + 8, 0, TWO_PI);
         ctx.fillStyle = grad;
         ctx.fill();
 
         // Specular highlight
-        const specGrad = ctx.createRadialGradient(
-            CENTER_X - 20, CENTER_Y - 25, 2,
-            CENTER_X - 15, CENTER_Y - 20, RADIUS * 0.6
-        );
-        specGrad.addColorStop(0, 'rgba(255, 255, 255, 0.25)');
-        specGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+        const sg = ctx.createRadialGradient(CX - 20, CY - 25, 2, CX - 15, CY - 20, RADIUS * 0.6);
+        sg.addColorStop(0, 'rgba(255,255,255,0.25)');
+        sg.addColorStop(1, 'rgba(255,255,255,0)');
         ctx.beginPath();
-        ctx.arc(CENTER_X, CENTER_Y, RADIUS, 0, Math.PI * 2);
-        ctx.fillStyle = specGrad;
+        ctx.arc(CX, CY, RADIUS, 0, TWO_PI);
+        ctx.fillStyle = sg;
         ctx.fill();
     }
 
-    // Orbit camera around Earth center (physical globe spin)
+    // ---- rAF loop: only draw when needed ----
+    function animationLoop() {
+        requestAnimationFrame(animationLoop);
+        if (!needsRedraw) return;
+        needsRedraw = false;
+        render();
+    }
+    requestAnimationFrame(animationLoop);
+
+    // ---- Cesium orbit ----
+    // Scratch Cartesian3s to avoid per-call allocation
+    const _dir = new Cesium.Cartesian3();
+    const _right = new Cesium.Cartesian3();
+    const _up = new Cesium.Cartesian3();
+    const _worldUp = new Cesium.Cartesian3(0, 1, 0);
+    const _dest = new Cesium.Cartesian3();
+
     function orbitAroundEarth(deltaX, deltaY) {
         const sensitivity = 0.005;
-
         orbitLon += deltaX * sensitivity;
         orbitLat -= deltaY * sensitivity;
 
-        // Clamp latitude to avoid flipping over poles
-        const minLat = -Math.PI / 2 + 0.05;
-        const maxLat = Math.PI / 2 - 0.05;
-        orbitLat = Math.max(minLat, Math.min(maxLat, orbitLat));
+        const minLat = -HALF_PI + 0.05;
+        const maxLat = HALF_PI - 0.05;
+        if (orbitLat < minLat) orbitLat = minLat;
+        if (orbitLat > maxLat) orbitLat = maxLat;
 
-        // Get current distance from Earth center
-        const camPos = viewer.camera.position;
-        const dist = Cesium.Cartesian3.magnitude(camPos);
-
-        // Compute new camera position on orbit sphere
+        const dist = Cesium.Cartesian3.magnitude(viewer.camera.position);
         const cosLat = Math.cos(orbitLat);
         const newX = dist * cosLat * Math.sin(orbitLon);
         const newY = dist * Math.sin(orbitLat);
         const newZ = dist * cosLat * Math.cos(orbitLon);
 
-        // Direction from camera to Earth center (for orientation)
-        const direction = new Cesium.Cartesian3(-newX, -newY, -newZ);
-        Cesium.Cartesian3.normalize(direction, direction);
+        _dest.x = newX; _dest.y = newY; _dest.z = newZ;
+        _dir.x = -newX; _dir.y = -newY; _dir.z = -newZ;
+        Cesium.Cartesian3.normalize(_dir, _dir);
 
-        // Up vector (world up projected to be perpendicular to direction)
-        const worldUp = new Cesium.Cartesian3(0, 1, 0);
-        const right = Cesium.Cartesian3.cross(direction, worldUp, new Cesium.Cartesian3());
-        Cesium.Cartesian3.normalize(right, right);
-        const up = Cesium.Cartesian3.cross(right, direction, new Cesium.Cartesian3());
-        Cesium.Cartesian3.normalize(up, up);
+        Cesium.Cartesian3.cross(_dir, _worldUp, _right);
+        Cesium.Cartesian3.normalize(_right, _right);
+        Cesium.Cartesian3.cross(_right, _dir, _up);
+        Cesium.Cartesian3.normalize(_up, _up);
 
         viewer.camera.setView({
-            destination: new Cesium.Cartesian3(newX, newY, newZ),
-            orientation: {
-                direction: direction,
-                up: up
-            }
+            destination: _dest,
+            orientation: { direction: _dir, up: _up }
         });
     }
 
-    // Derive orbit angles from current Cesium camera position
+    // ---- Camera sync ----
     function syncFromCamera() {
         const camPos = viewer.camera.position;
         const dist = Cesium.Cartesian3.magnitude(camPos);
         if (dist < 1) return;
 
-        // Extract spherical angles from camera position
         orbitLon = Math.atan2(camPos.x, camPos.z);
-        orbitLat = Math.asin(Math.max(-1, Math.min(1, camPos.y / dist)));
+        orbitLat = Math.asin(camPos.y / dist);
+        if (orbitLat < -1) orbitLat = -1;
+        if (orbitLat > 1) orbitLat = 1;
 
-        // Sync visual sphere rotation to match
         rotationY = -orbitLon;
         rotationX = orbitLat;
-        rotationX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, rotationX));
+        if (rotationX < -HALF_PI) rotationX = -HALF_PI;
+        if (rotationX > HALF_PI) rotationX = HALF_PI;
     }
 
-    // Drag interaction
+    // ---- Drag handling ----
     let isDragging = false;
     let lastMouseX = 0;
     let lastMouseY = 0;
 
     function handleDrag(deltaX, deltaY) {
-        // Update visual sphere
         rotationY -= deltaX * 0.01;
         rotationX += deltaY * 0.01;
-        rotationX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, rotationX));
-
-        // Orbit Cesium camera around Earth
+        if (rotationX < -HALF_PI) rotationX = -HALF_PI;
+        if (rotationX > HALF_PI) rotationX = HALF_PI;
         orbitAroundEarth(deltaX, deltaY);
-        render();
+        needsRedraw = true;
     }
 
     canvas.addEventListener('mousedown', (e) => {
@@ -1994,7 +2043,7 @@ function setupMiniEarthNavigation() {
         isDragging = true;
         lastMouseX = e.clientX;
         lastMouseY = e.clientY;
-        syncFromCamera(); // snap orbit state to current camera before dragging
+        syncFromCamera();
         canvas.classList.add('dragging');
         e.preventDefault();
         e.stopPropagation();
@@ -2002,9 +2051,7 @@ function setupMiniEarthNavigation() {
 
     document.addEventListener('mousemove', (e) => {
         if (!isDragging) return;
-        const deltaX = e.clientX - lastMouseX;
-        const deltaY = e.clientY - lastMouseY;
-        handleDrag(deltaX, deltaY);
+        handleDrag(e.clientX - lastMouseX, e.clientY - lastMouseY);
         lastMouseX = e.clientX;
         lastMouseY = e.clientY;
         e.preventDefault();
@@ -2024,10 +2071,9 @@ function setupMiniEarthNavigation() {
 
     canvas.addEventListener('touchstart', (e) => {
         if (e.touches.length !== 1) return;
-        const touch = e.touches[0];
         isDragging = true;
-        lastTouchX = touch.clientX;
-        lastTouchY = touch.clientY;
+        lastTouchX = e.touches[0].clientX;
+        lastTouchY = e.touches[0].clientY;
         syncFromCamera();
         canvas.classList.add('dragging');
         e.preventDefault();
@@ -2035,12 +2081,10 @@ function setupMiniEarthNavigation() {
 
     document.addEventListener('touchmove', (e) => {
         if (!isDragging || e.touches.length !== 1) return;
-        const touch = e.touches[0];
-        const deltaX = touch.clientX - lastTouchX;
-        const deltaY = touch.clientY - lastTouchY;
-        handleDrag(deltaX, deltaY);
-        lastTouchX = touch.clientX;
-        lastTouchY = touch.clientY;
+        const t = e.touches[0];
+        handleDrag(t.clientX - lastTouchX, t.clientY - lastTouchY);
+        lastTouchX = t.clientX;
+        lastTouchY = t.clientY;
         e.preventDefault();
     });
 
@@ -2051,26 +2095,28 @@ function setupMiniEarthNavigation() {
         }
     });
 
-    // Lightweight sync: update sphere visual when not dragging
-    let syncCounter = 0;
-    const origAnimate = window._miniEarthSyncHook;
-    function syncOnFrame() {
-        if (!isDragging && ++syncCounter % 15 === 0) {
-            syncFromCamera();
-            render();
-        }
-    }
-    // Hook into existing requestAnimationFrame loop via a lightweight check
+    // ---- Idle sync (lightweight, only when camera moved externally) ----
+    let lastSyncLon = 0;
+    let lastSyncLat = 0;
     setInterval(() => {
-        if (!isDragging) {
+        if (isDragging) return;
+        const camPos = viewer.camera.position;
+        const dist = Cesium.Cartesian3.magnitude(camPos);
+        if (dist < 1) return;
+        const newLon = Math.atan2(camPos.x, camPos.z);
+        const newLat = Math.asin(camPos.y / dist);
+        // Only sync+redraw if camera actually moved
+        if (Math.abs(newLon - lastSyncLon) > 0.001 || Math.abs(newLat - lastSyncLat) > 0.001) {
+            lastSyncLon = newLon;
+            lastSyncLat = newLat;
             syncFromCamera();
-            render();
+            needsRedraw = true;
         }
     }, 500);
 
     // Initial sync and render
     syncFromCamera();
-    render();
+    needsRedraw = true;
 }
 
 // ============================================================================
