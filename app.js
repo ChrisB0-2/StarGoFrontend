@@ -196,6 +196,9 @@ let cachedEntityArrayDirty = true;               // True when entities Map has c
 let clickHandler = null;                         // ScreenSpaceEventHandler for clicks
 let hoverHandler = null;                         // ScreenSpaceEventHandler for hover
 
+// Orbit segment generation counter (for flicker-free rebuilds)
+let orbitSegmentGeneration = 0;
+
 // Phase 4 State
 let historyTrails = new Map();                   // NORAD → { buffer[], head, count, entity }
 let curvedOrbitCache = new Map();                // NORAD → { points[], frameBuilt }
@@ -934,19 +937,25 @@ function precomputeSegmentArrays(points, K) {
 // Build (or rebuild) orbit segment entities for the given LOD tier.
 // Removes existing segments, creates new entities, updates orbitEntities map.
 function rebuildOrbitSegments(noradId, lodArrays, color, tier, fullOrbitPoints) {
-    // Remove existing segment entities (if any)
+    // Capture old segments for deferred removal (build new first to avoid flicker)
     const existing = orbitEntities.get(noradId);
-    if (existing && existing.segments) {
-        existing.segments.forEach(seg => viewer.entities.remove(seg));
-    }
-    
+    const oldSegments = (existing && existing.segments) ? existing.segments : [];
+
     const arrays = lodArrays[tier];
-    if (!arrays || arrays.length === 0) return;
-    
+    if (!arrays || arrays.length === 0) {
+        // No new segments — just remove old
+        oldSegments.forEach(seg => viewer.entities.remove(seg));
+        return;
+    }
+
+    // Increment generation so new segment IDs don't collide with old ones
+    orbitSegmentGeneration++;
+    const gen = orbitSegmentGeneration;
+
     const K = arrays.length;
     const vs = CONFIG.visual.orbit;
     const segments = [];
-    
+
     for (let s = 0; s < K; s++) {
         const t = K > 1 ? s / (K - 1) : 0; // 0 = head, 1 = tail
         
@@ -1023,7 +1032,7 @@ function rebuildOrbitSegments(noradId, lodArrays, color, tier, fullOrbitPoints) 
         }
         
         const segEntity = viewer.entities.add({
-            id: `orbit-seg-${noradId}-${s}`,
+            id: `orbit-seg-${noradId}-${gen}-${s}`,
             polyline: {
                 positions: positions,
                 width: width,
@@ -1033,7 +1042,10 @@ function rebuildOrbitSegments(noradId, lodArrays, color, tier, fullOrbitPoints) 
         });
         segments.push(segEntity);
     }
-    
+
+    // Remove old segments now that new ones are visible (flicker-free swap)
+    oldSegments.forEach(seg => viewer.entities.remove(seg));
+
     // Store full orbit data for LOD tier changes and trail length rebuilds
     const storedFull = fullOrbitPoints || (existing ? existing.fullOrbitPoints : null);
     orbitEntities.set(noradId, {
