@@ -182,6 +182,7 @@ let cachedKeyframeLookup = null;                 // Cache: { prev, next, prevTim
 let cullingVolume = null;                        // Cache: frustum culling volume (per frame)
 let orbitPositionsCache = new Map();             // noradId -> { positions, lastFrame }
 let scratchCartesian = new Cesium.Cartesian3();  // Reusable scratch object
+let scratchBoundingSphere = new Cesium.BoundingSphere(); // Reusable scratch for frustum culling
 
 // Phase 2 State
 let headGlowEntities = new Map();               // NORAD ID -> glow dot Cesium Entity
@@ -191,7 +192,9 @@ let depthScaleCache = new Map();                 // NORAD ID -> depth scale fact
 let hoveredSatellite = null;                     // NORAD ID of hovered satellite (or null)
 let hoverPickCounter = 0;                        // Throttle counter for hover picks
 let cachedEntityArray = null;                    // Cached Array.from(entities.entries())
-let cachedEntityArraySize = 0;                   // Invalidation flag: entity count
+let cachedEntityArrayDirty = true;               // True when entities Map has changed
+let clickHandler = null;                         // ScreenSpaceEventHandler for clicks
+let hoverHandler = null;                         // ScreenSpaceEventHandler for hover
 
 // Phase 4 State
 let historyTrails = new Map();                   // NORAD → { buffer[], head, count, entity }
@@ -297,7 +300,9 @@ function init() {
 // ============================================================================
 
 function setupClickHandler() {
-    const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+    if (clickHandler) clickHandler.destroy();
+    clickHandler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+    const handler = clickHandler;
     
     handler.setInputAction((click) => {
         const pickedObject = viewer.scene.pick(click.position);
@@ -350,8 +355,9 @@ function setupClickHandler() {
 
 function setupHoverHandler() {
     if (!CONFIG.visual.hover.enabled) return;
-    
-    const handler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+    if (hoverHandler) hoverHandler.destroy();
+    hoverHandler = new Cesium.ScreenSpaceEventHandler(viewer.scene.canvas);
+    const handler = hoverHandler;
     
     handler.setInputAction((movement) => {
         hoverPickCounter++;
@@ -1690,16 +1696,15 @@ function connectToBackend() {
         reconnectTimeout = null;
     }
 
-    const streamUrl = `${CONFIG.backendUrl}/api/v1/stream/keyframes`;
+    let streamUrl = `${CONFIG.backendUrl}/api/v1/stream/keyframes`;
+    if (CONFIG.authToken) {
+        streamUrl += `?token=${encodeURIComponent(CONFIG.authToken)}`;
+    }
 
-    console.log(`[SSE] Connecting to ${streamUrl}...`);
+    console.log(`[SSE] Connecting to ${streamUrl.split('?')[0]}...`);
     updateConnectionStatus('Connecting...', 'connecting');
 
     try {
-        if (CONFIG.authToken) {
-            console.warn('[SSE] EventSource does not support custom headers. Auth token will be ignored.');
-        }
-
         eventSource = new EventSource(streamUrl);
 
         eventSource.onopen = () => {
@@ -1886,6 +1891,7 @@ function createEntities(satellites) {
             
             const entity = viewer.entities.add(entityConfig);
             entities.set(sat.id, entity);
+            cachedEntityArrayDirty = true;
             
             if (isISS) {
                 console.log(`[Entities] ISS (NORAD 25544) created with special styling`);
@@ -1935,7 +1941,8 @@ function clearData() {
         viewer.entities.remove(entity);
     });
     entities.clear();
-    
+    cachedEntityArrayDirty = true;
+
     // Clear orbit state (remove all gradient segment entities)
     orbitCache.clear();
     orbitEntities.forEach(data => {
@@ -1955,7 +1962,7 @@ function clearData() {
     // Clear Phase 3 state
     clearHover();
     cachedEntityArray = null;
-    cachedEntityArraySize = 0;
+    cachedEntityArrayDirty = true;
 
     // Clear Phase 4 state
     historyTrails.forEach((trail, nid) => {
@@ -2284,9 +2291,9 @@ function updatePositions(currentTime) {
     // --- Optimization 3: Batched updates (Phase 3: cached entity array) ---
     // Update a rotating batch of satellites per frame to spread the work
     const batchSize = CONFIG.updateBatchSize;
-    if (cachedEntityArray === null || entities.size !== cachedEntityArraySize) {
+    if (cachedEntityArray === null || cachedEntityArrayDirty) {
         cachedEntityArray = Array.from(entities.entries());
-        cachedEntityArraySize = entities.size;
+        cachedEntityArrayDirty = false;
     }
     const entityArray = cachedEntityArray;
     const totalEntities = entityArray.length;
@@ -2315,18 +2322,22 @@ function updatePositions(currentTime) {
         // --- Optimization 4: Frustum culling ---
         // Skip position update for satellites outside the camera view
         if (CONFIG.enableFrustumCulling && cullingVolume) {
-            const visibility = cullingVolume.computeVisibility(
-                new Cesium.BoundingSphere(scratchCartesian, 0)
-            );
+            scratchBoundingSphere.center = scratchCartesian;
+            scratchBoundingSphere.radius = 0;
+            const visibility = cullingVolume.computeVisibility(scratchBoundingSphere);
             if (visibility === Cesium.Intersect.OUTSIDE) {
                 // Still set position (so it's correct when it comes into view)
                 // but only on every 10th frame for off-screen satellites
                 if (frameCounter % 10 !== 0) continue;
             }
         }
-        
-        // Set position (clone scratch to avoid aliasing)
-        entity.position = Cesium.Cartesian3.clone(scratchCartesian);
+
+        // Set position — update in-place when possible to avoid allocation
+        if (entity.position instanceof Cesium.Cartesian3) {
+            Cesium.Cartesian3.clone(scratchCartesian, entity.position);
+        } else {
+            entity.position = Cesium.Cartesian3.clone(scratchCartesian);
+        }
     }
     
     // Advance batch index for next frame, wrap around
