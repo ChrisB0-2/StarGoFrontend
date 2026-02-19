@@ -1726,35 +1726,242 @@ function setupEventHandlers() {
 }
 
 // ============================================================================
-// Mini Earth Navigation Sphere
+// Mini Earth Navigation Sphere (Canvas 3D)
 // ============================================================================
 
 function setupMiniEarthNavigation() {
-    const miniEarth = document.getElementById('miniEarth');
-    const earthSphere = miniEarth?.querySelector('.earth-sphere');
+    const canvas = document.getElementById('miniEarthCanvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
 
-    if (!miniEarth || !earthSphere) return;
+    // High-DPI support
+    const dpr = window.devicePixelRatio || 1;
+    const cssSize = 140;
+    canvas.width = cssSize * dpr;
+    canvas.height = cssSize * dpr;
+    ctx.scale(dpr, dpr);
 
-    let isDragging = false;
-    let lastMouseX = 0;
-    let lastMouseY = 0;
+    // Sphere geometry
+    const RADIUS = 55;
+    const CENTER_X = cssSize / 2;
+    const CENTER_Y = cssSize / 2;
+    const PERSPECTIVE_D = 400;
+    const SEGMENTS_LAT = 16;
+    const SEGMENTS_LON = 24;
+
+    // Light direction (normalized, from upper-left-front)
+    const lightDir = { x: -0.4, y: -0.6, z: 0.7 };
+    const lightLen = Math.sqrt(lightDir.x * lightDir.x + lightDir.y * lightDir.y + lightDir.z * lightDir.z);
+    lightDir.x /= lightLen; lightDir.y /= lightLen; lightDir.z /= lightLen;
+
+    // Rotation state
     let rotationX = 0;
     let rotationY = 0;
 
-    // Rotate Cesium camera around Earth center
+    // Generate sphere vertices
+    const vertices = [];
+    for (let lat = 0; lat <= SEGMENTS_LAT; lat++) {
+        const theta = (lat / SEGMENTS_LAT) * Math.PI;
+        const sinT = Math.sin(theta);
+        const cosT = Math.cos(theta);
+        for (let lon = 0; lon <= SEGMENTS_LON; lon++) {
+            const phi = (lon / SEGMENTS_LON) * 2 * Math.PI;
+            vertices.push({
+                x: RADIUS * sinT * Math.cos(phi),
+                y: RADIUS * cosT,
+                z: RADIUS * sinT * Math.sin(phi),
+                lat: lat / SEGMENTS_LAT,
+                lon: lon / SEGMENTS_LON
+            });
+        }
+    }
+
+    // Generate triangle faces
+    const faces = [];
+    for (let lat = 0; lat < SEGMENTS_LAT; lat++) {
+        for (let lon = 0; lon < SEGMENTS_LON; lon++) {
+            const i0 = lat * (SEGMENTS_LON + 1) + lon;
+            const i1 = i0 + 1;
+            const i2 = i0 + (SEGMENTS_LON + 1);
+            const i3 = i2 + 1;
+            faces.push([i0, i2, i1]);
+            faces.push([i1, i2, i3]);
+        }
+    }
+
+    // Rotation matrix helpers
+    function rotatePoint(px, py, pz) {
+        const cosX = Math.cos(rotationX), sinX = Math.sin(rotationX);
+        const cosY = Math.cos(rotationY), sinY = Math.sin(rotationY);
+
+        // Rotate around X axis
+        let y1 = py * cosX - pz * sinX;
+        let z1 = py * sinX + pz * cosX;
+
+        // Rotate around Y axis
+        let x2 = px * cosY + z1 * sinY;
+        let z2 = -px * sinY + z1 * cosY;
+
+        return { x: x2, y: y1, z: z2 };
+    }
+
+    // Perspective project
+    function project(p) {
+        const scale = PERSPECTIVE_D / (PERSPECTIVE_D + p.z);
+        return {
+            x: CENTER_X + p.x * scale,
+            y: CENTER_Y + p.y * scale,
+            scale: scale
+        };
+    }
+
+    // Cross product for face normal
+    function faceNormal(v0, v1, v2) {
+        const ax = v1.x - v0.x, ay = v1.y - v0.y, az = v1.z - v0.z;
+        const bx = v2.x - v0.x, by = v2.y - v0.y, bz = v2.z - v0.z;
+        const nx = ay * bz - az * by;
+        const ny = az * bx - ax * bz;
+        const nz = ax * by - ay * bx;
+        const len = Math.sqrt(nx * nx + ny * ny + nz * nz) || 1;
+        return { x: nx / len, y: ny / len, z: nz / len };
+    }
+
+    // Determine face color based on lat/lon (simple land/ocean)
+    function getFaceColor(face) {
+        // Average lat/lon of face vertices
+        let avgLat = 0, avgLon = 0;
+        for (const idx of face) {
+            avgLat += vertices[idx].lat;
+            avgLon += vertices[idx].lon;
+        }
+        avgLat /= face.length;
+        avgLon /= face.length;
+
+        // Simple continent mapping (lat 0=north pole, 1=south pole)
+        // Convert to geographic: latGeo in [-90, 90], lonGeo in [0, 360]
+        const latGeo = 90 - avgLat * 180;
+        const lonGeo = avgLon * 360;
+
+        // Approximate continent regions
+        const isLand =
+            // North America
+            (latGeo > 25 && latGeo < 70 && lonGeo > 210 && lonGeo < 310) ||
+            // South America
+            (latGeo > -55 && latGeo < 15 && lonGeo > 270 && lonGeo < 330) ||
+            // Europe
+            (latGeo > 35 && latGeo < 70 && lonGeo > 340 || latGeo > 35 && latGeo < 70 && lonGeo < 40) ||
+            // Africa
+            (latGeo > -35 && latGeo < 35 && lonGeo > 345 || latGeo > -35 && latGeo < 35 && lonGeo > 0 && lonGeo < 50) ||
+            // Asia
+            (latGeo > 10 && latGeo < 70 && lonGeo > 40 && lonGeo < 150) ||
+            // Australia
+            (latGeo > -40 && latGeo < -10 && lonGeo > 110 && lonGeo < 155) ||
+            // Antarctica
+            (latGeo < -65);
+
+        if (isLand) {
+            return { r: 45, g: 120, b: 45 };  // Green land
+        }
+        return { r: 30, g: 70, b: 140 };       // Blue ocean
+    }
+
+    // Render the sphere
+    function render() {
+        ctx.clearRect(0, 0, cssSize, cssSize);
+
+        // Transform all vertices
+        const transformed = vertices.map(v => rotatePoint(v.x, v.y, v.z));
+        const projected = transformed.map(v => project(v));
+
+        // Build renderable faces with depth
+        const renderFaces = [];
+        for (const face of faces) {
+            const v0 = transformed[face[0]];
+            const v1 = transformed[face[1]];
+            const v2 = transformed[face[2]];
+
+            // Face normal for backface culling
+            const normal = faceNormal(v0, v1, v2);
+
+            // Backface cull: skip faces pointing away from camera
+            if (normal.z <= 0) continue;
+
+            // Average depth for sorting
+            const avgZ = (v0.z + v1.z + v2.z) / 3;
+
+            // Lighting: dot product with light direction
+            const dot = normal.x * lightDir.x + normal.y * lightDir.y + normal.z * lightDir.z;
+            const brightness = Math.max(0.15, Math.min(1.0, dot * 0.7 + 0.5));
+
+            // Get base color
+            const baseColor = getFaceColor(face);
+
+            renderFaces.push({
+                face,
+                avgZ,
+                brightness,
+                baseColor
+            });
+        }
+
+        // Depth sort: farthest first (painter's algorithm)
+        renderFaces.sort((a, b) => b.avgZ - a.avgZ);
+
+        // Draw faces
+        for (const rf of renderFaces) {
+            const p0 = projected[rf.face[0]];
+            const p1 = projected[rf.face[1]];
+            const p2 = projected[rf.face[2]];
+
+            const r = Math.round(rf.baseColor.r * rf.brightness);
+            const g = Math.round(rf.baseColor.g * rf.brightness);
+            const b = Math.round(rf.baseColor.b * rf.brightness);
+
+            ctx.beginPath();
+            ctx.moveTo(p0.x, p0.y);
+            ctx.lineTo(p1.x, p1.y);
+            ctx.lineTo(p2.x, p2.y);
+            ctx.closePath();
+            ctx.fillStyle = `rgb(${r},${g},${b})`;
+            ctx.fill();
+        }
+
+        // Atmosphere glow overlay
+        const grad = ctx.createRadialGradient(
+            CENTER_X - 15, CENTER_Y - 15, RADIUS * 0.2,
+            CENTER_X, CENTER_Y, RADIUS + 8
+        );
+        grad.addColorStop(0, 'rgba(150, 200, 255, 0.08)');
+        grad.addColorStop(0.7, 'rgba(74, 158, 255, 0.05)');
+        grad.addColorStop(1, 'rgba(74, 158, 255, 0.15)');
+        ctx.beginPath();
+        ctx.arc(CENTER_X, CENTER_Y, RADIUS + 8, 0, Math.PI * 2);
+        ctx.fillStyle = grad;
+        ctx.fill();
+
+        // Specular highlight
+        const specGrad = ctx.createRadialGradient(
+            CENTER_X - 20, CENTER_Y - 25, 2,
+            CENTER_X - 15, CENTER_Y - 20, RADIUS * 0.6
+        );
+        specGrad.addColorStop(0, 'rgba(255, 255, 255, 0.25)');
+        specGrad.addColorStop(1, 'rgba(255, 255, 255, 0)');
+        ctx.beginPath();
+        ctx.arc(CENTER_X, CENTER_Y, RADIUS, 0, Math.PI * 2);
+        ctx.fillStyle = specGrad;
+        ctx.fill();
+    }
+
+    // Rotate Cesium camera
     function rotateCesiumGlobe(deltaX, deltaY) {
         const camera = viewer.camera;
         const sensitivity = 0.005;
 
-        const headingDelta = -deltaX * sensitivity;
-        const pitchDelta = deltaY * sensitivity;
-
-        const newHeading = camera.heading + headingDelta;
-
+        const newHeading = camera.heading - deltaX * sensitivity;
         const minPitch = -Cesium.Math.PI_OVER_TWO + 0.1;
         const maxPitch = Cesium.Math.PI_OVER_TWO - 0.1;
         const newPitch = Cesium.Math.clamp(
-            camera.pitch + pitchDelta,
+            camera.pitch + deltaY * sensitivity,
             minPitch,
             maxPitch
         );
@@ -1768,44 +1975,43 @@ function setupMiniEarthNavigation() {
         });
     }
 
-    // Update visual sphere rotation
-    function updateSphereRotation(deltaX, deltaY) {
-        rotationY += deltaX * 0.5;
-        rotationX += deltaY * 0.5;
-        rotationX = Math.max(-90, Math.min(90, rotationX));
-        earthSphere.style.transform =
-            `rotateX(${rotationX}deg) rotateY(${rotationY}deg)`;
-    }
+    // Drag interaction
+    let isDragging = false;
+    let lastMouseX = 0;
+    let lastMouseY = 0;
 
-    // Mouse down - start drag
-    miniEarth.addEventListener('mousedown', (e) => {
+    canvas.addEventListener('mousedown', (e) => {
         if (e.button !== 0) return;
         isDragging = true;
         lastMouseX = e.clientX;
         lastMouseY = e.clientY;
-        miniEarth.classList.add('dragging');
+        canvas.classList.add('dragging');
         e.preventDefault();
         e.stopPropagation();
     });
 
-    // Mouse move - rotate globe
     document.addEventListener('mousemove', (e) => {
         if (!isDragging) return;
         const deltaX = e.clientX - lastMouseX;
         const deltaY = e.clientY - lastMouseY;
+
+        rotationY += deltaX * 0.01;
+        rotationX += deltaY * 0.01;
+        rotationX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, rotationX));
+
         rotateCesiumGlobe(deltaX, deltaY);
-        updateSphereRotation(deltaX, deltaY);
+        render();
+
         lastMouseX = e.clientX;
         lastMouseY = e.clientY;
         e.preventDefault();
     });
 
-    // Mouse up - end drag
     document.addEventListener('mouseup', (e) => {
         if (e.button !== 0) return;
         if (isDragging) {
             isDragging = false;
-            miniEarth.classList.remove('dragging');
+            canvas.classList.remove('dragging');
         }
     });
 
@@ -1813,13 +2019,13 @@ function setupMiniEarthNavigation() {
     let lastTouchX = 0;
     let lastTouchY = 0;
 
-    miniEarth.addEventListener('touchstart', (e) => {
+    canvas.addEventListener('touchstart', (e) => {
         if (e.touches.length !== 1) return;
         const touch = e.touches[0];
         isDragging = true;
         lastTouchX = touch.clientX;
         lastTouchY = touch.clientY;
-        miniEarth.classList.add('dragging');
+        canvas.classList.add('dragging');
         e.preventDefault();
     });
 
@@ -1828,8 +2034,14 @@ function setupMiniEarthNavigation() {
         const touch = e.touches[0];
         const deltaX = touch.clientX - lastTouchX;
         const deltaY = touch.clientY - lastTouchY;
+
+        rotationY += deltaX * 0.01;
+        rotationX += deltaY * 0.01;
+        rotationX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, rotationX));
+
         rotateCesiumGlobe(deltaX, deltaY);
-        updateSphereRotation(deltaX, deltaY);
+        render();
+
         lastTouchX = touch.clientX;
         lastTouchY = touch.clientY;
         e.preventDefault();
@@ -1838,20 +2050,25 @@ function setupMiniEarthNavigation() {
     document.addEventListener('touchend', () => {
         if (isDragging) {
             isDragging = false;
-            miniEarth.classList.remove('dragging');
+            canvas.classList.remove('dragging');
         }
     });
 
-    // Sync sphere rotation with Cesium camera on initialization
-    function syncSphereWithCamera() {
+    // Sync sphere rotation with Cesium camera periodically
+    function syncWithCamera() {
+        if (isDragging) return;
         const camera = viewer.camera;
-        rotationY = Cesium.Math.toDegrees(camera.heading);
-        rotationX = Cesium.Math.toDegrees(camera.pitch) + 90;
-        earthSphere.style.transform =
-            `rotateX(${rotationX}deg) rotateY(${rotationY}deg)`;
+        rotationY = camera.heading;
+        rotationX = -(camera.pitch + Cesium.Math.PI_OVER_TWO);
+        rotationX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, rotationX));
+        render();
     }
 
-    setTimeout(syncSphereWithCamera, 100);
+    // Sync every 10 frames via animate hook, or use interval
+    setInterval(syncWithCamera, 200);
+
+    // Initial render
+    syncWithCamera();
 }
 
 // ============================================================================
