@@ -453,17 +453,20 @@ function selectSatellite(noradId) {
             }, false)
             : 2.0;
         
-        // Add 3D model
+        // Add 3D model — ISS gets ISS model, others get Starlink model
+        const isISS = parseInt(noradId) === 25544 || noradId === 25544;
         entity.model = {
-            uri: './models/starlink_spacex_satellite.glb',
-            minimumPixelSize: 48,
+            uri: isISS
+                ? './models/international_space_station_iss.glb'
+                : './models/starlink_spacex_satellite.glb',
+            minimumPixelSize: isISS ? 64 : 48,
             maximumScale: 200000,
             scale: 1,
             show: true,
-            color: Cesium.Color.CYAN,
+            color: isISS ? Cesium.Color.WHITE : Cesium.Color.CYAN,
             colorBlendMode: Cesium.ColorBlendMode.HIGHLIGHT,
-            colorBlendAmount: 0.3,
-            silhouetteColor: Cesium.Color.WHITE,
+            colorBlendAmount: isISS ? 0.2 : 0.3,
+            silhouetteColor: isISS ? Cesium.Color.CYAN : Cesium.Color.WHITE,
             silhouetteSize: silhouetteProp
         };
     }
