@@ -1680,18 +1680,28 @@ function setupEventHandlers() {
 // ============================================================================
 
 function connectToBackend() {
+    // Clean up any existing connection before opening a new one
+    if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+    }
+    if (reconnectTimeout) {
+        clearTimeout(reconnectTimeout);
+        reconnectTimeout = null;
+    }
+
     const streamUrl = `${CONFIG.backendUrl}/api/v1/stream/keyframes`;
-    
+
     console.log(`[SSE] Connecting to ${streamUrl}...`);
     updateConnectionStatus('Connecting...', 'connecting');
-    
+
     try {
         if (CONFIG.authToken) {
             console.warn('[SSE] EventSource does not support custom headers. Auth token will be ignored.');
         }
-        
+
         eventSource = new EventSource(streamUrl);
-        
+
         eventSource.onopen = () => {
             console.log('[SSE] Connected');
             updateConnectionStatus('Connected', 'connected');
@@ -1699,25 +1709,22 @@ function connectToBackend() {
             // Reset time sync on new connection to recompute offset
             backendTimeSynced = false;
         };
-        
+
         eventSource.onmessage = (event) => {
             handleSSEMessage(event.data);
         };
-        
+
+        // Close immediately on error to prevent EventSource's built-in
+        // auto-reconnect from competing with our manual backoff logic.
         eventSource.onerror = (error) => {
             console.error('[SSE] Connection error:', error);
             updateConnectionStatus('Connection Lost', 'error');
-            
-            reconnectAttempts++;
-            
-            if (reconnectAttempts > 10) {
-                console.error('[SSE] Too many reconnection attempts. Closing connection.');
-                eventSource.close();
-                eventSource = null;
-                scheduleReconnect();
-            }
+
+            eventSource.close();
+            eventSource = null;
+            scheduleReconnect();
         };
-        
+
     } catch (error) {
         console.error('[SSE] Failed to connect:', error);
         updateConnectionStatus('Connection Failed', 'error');
@@ -1728,16 +1735,17 @@ function connectToBackend() {
 function scheduleReconnect() {
     if (reconnectTimeout) {
         clearTimeout(reconnectTimeout);
+        reconnectTimeout = null;
     }
-    
+
     const delay = Math.min(
         CONFIG.reconnectBaseDelay * Math.pow(2, reconnectAttempts),
         CONFIG.reconnectMaxDelay
     );
-    
-    console.log(`[SSE] Reconnecting in ${delay}ms...`);
+
+    console.log(`[SSE] Reconnecting in ${delay}ms (attempt ${reconnectAttempts + 1})...`);
     updateConnectionStatus(`Reconnecting in ${Math.round(delay / 1000)}s...`, 'reconnecting');
-    
+
     reconnectTimeout = setTimeout(() => {
         reconnectAttempts++;
         connectToBackend();
@@ -1981,6 +1989,46 @@ function clearData() {
     console.log('[Clear] Data cleared');
 }
 
+// Periodic sweep: remove stale entries from caches for satellites that
+// are no longer in the active entity set or no longer selected.
+// Called every ~3600 frames (~60s at 60 FPS) from the animate loop.
+function sweepStaleCaches() {
+    // Caches keyed by NORAD ID that should only exist for active entities
+    for (const noradId of orbitCache.keys()) {
+        if (!entities.has(noradId)) {
+            orbitCache.delete(noradId);
+        }
+    }
+    for (const noradId of orbitPositionsCache.keys()) {
+        if (!entities.has(noradId) || !selectedSatellites.has(noradId)) {
+            orbitPositionsCache.delete(noradId);
+        }
+    }
+    for (const noradId of depthScaleCache.keys()) {
+        if (!entities.has(noradId) || !selectedSatellites.has(noradId)) {
+            depthScaleCache.delete(noradId);
+        }
+    }
+    for (const noradId of curvedOrbitCache.keys()) {
+        if (!entities.has(noradId) || !selectedSatellites.has(noradId)) {
+            curvedOrbitCache.delete(noradId);
+        }
+    }
+    for (const noradId of satelliteTleEpochs.keys()) {
+        if (!entities.has(noradId)) {
+            satelliteTleEpochs.delete(noradId);
+        }
+    }
+
+    // Evict expired orbit cache entries (beyond TTL)
+    const now = Date.now();
+    for (const [noradId, entry] of orbitCache) {
+        if (now - entry.fetchedAt > CONFIG.orbitCacheTTL) {
+            orbitCache.delete(noradId);
+        }
+    }
+}
+
 // ============================================================================
 // TLE Refresh
 // ============================================================================
@@ -2083,6 +2131,11 @@ function animate() {
     // Phase 4: Update global staleness indicator every 60 frames
     if (frameCounter % 60 === 0) {
         updateGlobalStalenessIndicator();
+    }
+
+    // Sweep stale cache entries every ~60 seconds (3600 frames at 60 FPS)
+    if (frameCounter % 3600 === 0) {
+        sweepStaleCaches();
     }
 
     if (!isPlaying) {
@@ -2696,56 +2749,73 @@ function renderPassTable(passes) {
         const durationSec = (endTime - startTime) / 1000;
         const durationMin = Math.floor(durationSec / 60);
         const durationSecRemainder = Math.round(durationSec % 60);
-        const maxElev = pass.max_elevation || pass.max_elev || 0;
-        const azimuth = pass.azimuth_at_max || pass.az_max || 0;
-        const noradId = pass.norad_id || pass.satellite_id || '--';
-        
+        const maxElev = Number(pass.max_elevation || pass.max_elev) || 0;
+        const azimuth = Number(pass.azimuth_at_max || pass.az_max) || 0;
+        const noradId = parseInt(pass.norad_id || pass.satellite_id, 10) || '--';
+
         // Time until pass
         const timeDiffMs = startTime - now;
         const isUpcoming = timeDiffMs > 0 && timeDiffMs < 3600000; // within 1 hour
         const isPast = timeDiffMs < 0;
-        
+
         // Elevation color class
         let elevClass = 'elev-low';
         if (maxElev >= 60) elevClass = 'elev-high';
         else if (maxElev >= 30) elevClass = 'elev-mid';
-        
+
         const tr = document.createElement('tr');
         tr.className = `pass-row ${isUpcoming ? 'pass-upcoming' : ''} ${isPast ? 'pass-past' : ''}`;
         tr.dataset.passIndex = idx;
-        
-        tr.innerHTML = `
-            <td class="pass-sat">${noradId}</td>
-            <td class="pass-time">${formatPassTime(startTime)}</td>
-            <td class="pass-duration">${durationMin}:${durationSecRemainder.toString().padStart(2, '0')}</td>
-            <td class="pass-elev ${elevClass}">${maxElev.toFixed(1)}°</td>
-            <td class="pass-az">${azimuthToCompass(azimuth)} (${azimuth.toFixed(0)}°)</td>
-            <td><button class="pass-viz-btn" data-pass-idx="${idx}" title="Visualize on globe">👁</button></td>
-        `;
-        
-        tbody.appendChild(tr);
-    });
-    
-    // Add click handlers for visualize buttons
-    tbody.querySelectorAll('.pass-viz-btn').forEach(btn => {
-        btn.addEventListener('click', (e) => {
+
+        // Build cells safely via textContent (no innerHTML injection)
+        const tdSat = document.createElement('td');
+        tdSat.className = 'pass-sat';
+        tdSat.textContent = String(noradId);
+
+        const tdTime = document.createElement('td');
+        tdTime.className = 'pass-time';
+        tdTime.textContent = formatPassTime(startTime);
+
+        const tdDur = document.createElement('td');
+        tdDur.className = 'pass-duration';
+        tdDur.textContent = `${durationMin}:${durationSecRemainder.toString().padStart(2, '0')}`;
+
+        const tdElev = document.createElement('td');
+        tdElev.className = `pass-elev ${elevClass}`;
+        tdElev.textContent = `${maxElev.toFixed(1)}\u00B0`;
+
+        const tdAz = document.createElement('td');
+        tdAz.className = 'pass-az';
+        tdAz.textContent = `${azimuthToCompass(azimuth)} (${azimuth.toFixed(0)}\u00B0)`;
+
+        const tdAction = document.createElement('td');
+        const vizBtn = document.createElement('button');
+        vizBtn.className = 'pass-viz-btn';
+        vizBtn.title = 'Visualize on globe';
+        vizBtn.textContent = '\uD83D\uDC41';
+        vizBtn.addEventListener('click', (e) => {
             e.stopPropagation();
-            const idx = parseInt(btn.dataset.passIdx);
             visualizePass(sorted[idx]);
         });
-    });
-    
-    // Add click handlers for rows (select satellite)
-    tbody.querySelectorAll('.pass-row').forEach(row => {
-        row.addEventListener('click', () => {
-            const idx = parseInt(row.dataset.passIndex);
-            const pass = sorted[idx];
-            const noradId = pass.norad_id || pass.satellite_id;
-            if (noradId && !isNaN(noradId)) {
-                selectSatellite(parseInt(noradId));
+        tdAction.appendChild(vizBtn);
+
+        tr.appendChild(tdSat);
+        tr.appendChild(tdTime);
+        tr.appendChild(tdDur);
+        tr.appendChild(tdElev);
+        tr.appendChild(tdAz);
+        tr.appendChild(tdAction);
+
+        // Row click → select satellite
+        tr.addEventListener('click', () => {
+            const nid = parseInt(pass.norad_id || pass.satellite_id, 10);
+            if (!isNaN(nid)) {
+                selectSatellite(nid);
                 updateSelectionUI();
             }
         });
+
+        tbody.appendChild(tr);
     });
     
     // Add sort handlers on column headers
