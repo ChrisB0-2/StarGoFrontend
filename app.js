@@ -692,29 +692,42 @@ function fetchFullOrbit(noradId) {
 }
 
 function displayFullOrbit(noradId, positions) {
-    // Remove existing orbit display
-    removeFullOrbit(noradId);
+    // Clear caches and timers but keep old segments visible until rebuild swaps them out.
+    // rebuildOrbitSegments will handle the flicker-free swap of old → new segments.
+    orbitPositionsCache.delete(noradId);
+    depthScaleCache.delete(noradId);
+    curvedOrbitCache.delete(noradId);
+    removeUncertaintyViz(noradId);
+    const existingTimer = orbitRefreshTimers.get(noradId);
+    if (existingTimer) {
+        clearInterval(existingTimer);
+        orbitRefreshTimers.delete(noradId);
+    }
     
     if (!positions || positions.length < 2) {
         console.warn(`[Orbit] Not enough positions for NORAD ${noradId}`);
+        removeFullOrbit(noradId);
         return;
     }
-    
+
     if (!positions[0].p || !Array.isArray(positions[0].p) || positions[0].p.length !== 3) {
         console.error(`[Orbit] Invalid position format. Expected {p: [x,y,z]}, got:`, positions[0]);
+        removeFullOrbit(noradId);
         return;
     }
     
     const entity = entities.get(noradId);
     if (!entity) {
         console.warn(`[Orbit] Entity not found for NORAD ${noradId}`);
+        removeFullOrbit(noradId);
         return;
     }
-    
+
     // Get satellite's current position from keyframe interpolation
     const satPos = getEntityPosition(entity);
     if (!satPos) {
         console.error(`[Orbit] Cannot get current position for NORAD ${noradId}`);
+        removeFullOrbit(noradId);
         return;
     }
     
@@ -815,6 +828,7 @@ function displayFullOrbit(noradId, positions) {
     
     if (orbitPoints.length < 2) {
         console.error(`[Orbit] Not enough valid positions after conversion`);
+        removeFullOrbit(noradId);
         return;
     }
     
