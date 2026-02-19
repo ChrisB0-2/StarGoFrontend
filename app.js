@@ -206,6 +206,10 @@ let uncertaintyEntities = new Map();             // NORAD → { segments[], mode
 let satelliteTleEpochs = new Map();              // NORAD → { epochDate, ageSeconds }
 let historyTrailMinutes = 10;                    // current user setting
 
+// WASD Camera Movement State
+const keysPressed = { w: false, a: false, s: false, d: false, q: false, e: false };
+const CAMERA_MOVE_SPEED = 50000;                 // meters per frame
+
 // Helper: read an entity's current position regardless of whether
 // Cesium wrapped it in a Property or it's a raw Cartesian3
 function getEntityPosition(entity) {
@@ -1709,6 +1713,23 @@ function setupEventHandlers() {
             }
         });
     }
+
+    // WASD Camera Movement
+    document.addEventListener('keydown', (e) => {
+        const key = e.key.toLowerCase();
+        if (key in keysPressed) {
+            if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
+                keysPressed[key] = true;
+                e.preventDefault();
+            }
+        }
+    });
+    document.addEventListener('keyup', (e) => {
+        const key = e.key.toLowerCase();
+        if (key in keysPressed) {
+            keysPressed[key] = false;
+        }
+    });
 }
 
 // ============================================================================
@@ -2154,10 +2175,21 @@ async function refreshTLEData() {
 
 function animate() {
     requestAnimationFrame(animate);
-    
+
     frameCount++;
     frameCounter++;
-    
+
+    // WASD Camera Movement
+    if (keysPressed.w || keysPressed.a || keysPressed.s || keysPressed.d || keysPressed.q || keysPressed.e) {
+        const camera = viewer.camera;
+        if (keysPressed.w) camera.moveForward(CAMERA_MOVE_SPEED);
+        if (keysPressed.s) camera.moveBackward(CAMERA_MOVE_SPEED);
+        if (keysPressed.a) camera.moveLeft(CAMERA_MOVE_SPEED);
+        if (keysPressed.d) camera.moveRight(CAMERA_MOVE_SPEED);
+        if (keysPressed.q) camera.moveUp(CAMERA_MOVE_SPEED);
+        if (keysPressed.e) camera.moveDown(CAMERA_MOVE_SPEED);
+    }
+
     // Phase 3: combined orbit visibility, depth scaling, and LOD (low frequency)
     const dv = CONFIG.visual.orbit;
     if (selectedSatellites.size > 0 &&
