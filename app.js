@@ -1746,7 +1746,7 @@ function setupMiniEarthNavigation() {
     const CX = cssSize / 2;
     const CY = cssSize / 2;
     const PERSP = 400;
-    const DETAIL = 12;
+    const DETAIL = 16;
     const HALF_PI = Math.PI / 2;
     const TWO_PI = Math.PI * 2;
 
@@ -2030,12 +2030,14 @@ function setupMiniEarthNavigation() {
     let lastMouseY = 0;
 
     function handleDrag(deltaX, deltaY) {
-        rotationY -= deltaX * 0.01;
-        rotationX += deltaY * 0.01;
+        rotationY -= deltaX * 0.015;
+        rotationX += deltaY * 0.015;
         if (rotationX < -HALF_PI) rotationX = -HALF_PI;
         if (rotationX > HALF_PI) rotationX = HALF_PI;
         orbitAroundEarth(deltaX, deltaY);
-        needsRedraw = true;
+        // Immediate draw during drag for zero-latency feedback
+        render();
+        needsRedraw = false; // already drawn, skip rAF redundant draw
     }
 
     canvas.addEventListener('mousedown', (e) => {
