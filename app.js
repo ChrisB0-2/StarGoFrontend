@@ -206,9 +206,13 @@ let uncertaintyEntities = new Map();             // NORAD → { segments[], mode
 let satelliteTleEpochs = new Map();              // NORAD → { epochDate, ageSeconds }
 let historyTrailMinutes = 10;                    // current user setting
 
-// WASD Camera Movement State
-const keysPressed = { w: false, a: false, s: false, d: false, q: false, e: false };
+// WASD Camera Movement + Arrow Key Rotation State
+const keysPressed = {
+    w: false, a: false, s: false, d: false, q: false, e: false,
+    arrowleft: false, arrowright: false, arrowup: false, arrowdown: false
+};
 const CAMERA_MOVE_SPEED = 50000;                 // meters per frame
+const CAMERA_ROTATION_SPEED = 0.02;              // radians per frame
 
 // Helper: read an entity's current position regardless of whether
 // Cesium wrapped it in a Property or it's a raw Cartesian3
@@ -1714,7 +1718,7 @@ function setupEventHandlers() {
         });
     }
 
-    // WASD Camera Movement
+    // WASD Camera Movement + Arrow Key Rotation
     document.addEventListener('keydown', (e) => {
         const key = e.key.toLowerCase();
         if (key in keysPressed) {
@@ -2188,6 +2192,15 @@ function animate() {
         if (keysPressed.d) camera.moveRight(CAMERA_MOVE_SPEED);
         if (keysPressed.q) camera.moveUp(CAMERA_MOVE_SPEED);
         if (keysPressed.e) camera.moveDown(CAMERA_MOVE_SPEED);
+    }
+
+    // Arrow Key Camera Rotation
+    if (keysPressed.arrowleft || keysPressed.arrowright || keysPressed.arrowup || keysPressed.arrowdown) {
+        const camera = viewer.camera;
+        if (keysPressed.arrowleft) camera.lookLeft(CAMERA_ROTATION_SPEED);
+        if (keysPressed.arrowright) camera.lookRight(CAMERA_ROTATION_SPEED);
+        if (keysPressed.arrowup) camera.lookUp(CAMERA_ROTATION_SPEED);
+        if (keysPressed.arrowdown) camera.lookDown(CAMERA_ROTATION_SPEED);
     }
 
     // Phase 3: combined orbit visibility, depth scaling, and LOD (low frequency)
