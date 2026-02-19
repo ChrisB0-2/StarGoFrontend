@@ -20,7 +20,58 @@
 <body>
     <!-- Cesium Viewer Container -->
     <div id="cesiumContainer"></div>
-    
+
+    <!-- Side Navigation Panel -->
+    <div id="navPanel">
+        <div class="nav-panel-header">
+            <h3>Navigation</h3>
+            <button id="toggleNavPanel" class="nav-toggle-btn" title="Toggle Navigation Panel">&#9668;</button>
+        </div>
+        <div id="navPanelContent" class="nav-panel-content">
+            <!-- Compass/Orientation Indicator -->
+            <div class="nav-compass-container">
+                <div id="navCompass" class="nav-compass">
+                    <div class="compass-ring">
+                        <div class="compass-needle" id="compassNeedle">N</div>
+                        <span class="compass-marker compass-n">N</span>
+                        <span class="compass-marker compass-e">E</span>
+                        <span class="compass-marker compass-s">S</span>
+                        <span class="compass-marker compass-w">W</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Zoom Controls -->
+            <div class="nav-control-group">
+                <button id="navZoomIn" class="nav-btn nav-btn-primary" title="Zoom In">+</button>
+                <button id="navZoomOut" class="nav-btn nav-btn-primary" title="Zoom Out">&minus;</button>
+            </div>
+
+            <!-- Rotation Controls -->
+            <div class="nav-control-group">
+                <div class="nav-rotation-grid">
+                    <button id="navRotateUp" class="nav-btn" title="Look Up">&#9650;</button>
+                    <div class="nav-rotation-row">
+                        <button id="navRotateLeft" class="nav-btn" title="Rotate Left">&#9668;</button>
+                        <button id="navRotateRight" class="nav-btn" title="Rotate Right">&#9658;</button>
+                    </div>
+                    <button id="navRotateDown" class="nav-btn" title="Look Down">&#9660;</button>
+                </div>
+            </div>
+
+            <!-- Home/Reset Button -->
+            <div class="nav-control-group">
+                <button id="navHome" class="nav-btn nav-btn-home" title="Reset View to Home">&#8962;</button>
+            </div>
+
+            <!-- Tilt Controls -->
+            <div class="nav-control-group">
+                <button id="navTiltUp" class="nav-btn nav-btn-small" title="Tilt Up">&#8599;</button>
+                <button id="navTiltDown" class="nav-btn nav-btn-small" title="Tilt Down">&#8600;</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Status Bar Overlay -->
     <div id="statusBar">
         <div class="status-group">

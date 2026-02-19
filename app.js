@@ -280,7 +280,10 @@ function init() {
     
     // Setup UI event handlers
     setupEventHandlers();
-    
+
+    // Setup navigation panel
+    setupNavigationPanel();
+
     // Setup satellite click handler
     setupClickHandler();
     
@@ -1723,6 +1726,111 @@ function setupEventHandlers() {
 }
 
 // ============================================================================
+// Side Navigation Panel
+// ============================================================================
+
+function updateCompass() {
+    const compassNeedle = document.getElementById('compassNeedle');
+    if (!compassNeedle || !viewer) return;
+
+    const heading = Cesium.Math.toDegrees(viewer.camera.heading);
+    compassNeedle.style.transform = `translate(-50%, -50%) rotate(${-heading}deg)`;
+}
+
+function setupNavigationPanel() {
+    const navPanel = document.getElementById('navPanel');
+    const toggleBtn = document.getElementById('toggleNavPanel');
+
+    // Toggle panel collapse
+    if (toggleBtn) {
+        toggleBtn.addEventListener('click', () => {
+            navPanel.classList.toggle('collapsed');
+            toggleBtn.textContent = navPanel.classList.contains('collapsed') ? '\u25BA' : '\u25C4';
+        });
+    }
+
+    // Zoom In
+    const zoomInBtn = document.getElementById('navZoomIn');
+    if (zoomInBtn) {
+        zoomInBtn.addEventListener('click', () => {
+            viewer.camera.zoomIn(viewer.camera.positionCartographic.height * 0.3);
+        });
+    }
+
+    // Zoom Out
+    const zoomOutBtn = document.getElementById('navZoomOut');
+    if (zoomOutBtn) {
+        zoomOutBtn.addEventListener('click', () => {
+            viewer.camera.zoomOut(viewer.camera.positionCartographic.height * 0.3);
+        });
+    }
+
+    // Rotate Left
+    const rotateLeftBtn = document.getElementById('navRotateLeft');
+    if (rotateLeftBtn) {
+        rotateLeftBtn.addEventListener('click', () => {
+            viewer.camera.lookRight(-0.1);
+        });
+    }
+
+    // Rotate Right
+    const rotateRightBtn = document.getElementById('navRotateRight');
+    if (rotateRightBtn) {
+        rotateRightBtn.addEventListener('click', () => {
+            viewer.camera.lookRight(0.1);
+        });
+    }
+
+    // Look Up
+    const rotateUpBtn = document.getElementById('navRotateUp');
+    if (rotateUpBtn) {
+        rotateUpBtn.addEventListener('click', () => {
+            viewer.camera.lookUp(0.1);
+        });
+    }
+
+    // Look Down
+    const rotateDownBtn = document.getElementById('navRotateDown');
+    if (rotateDownBtn) {
+        rotateDownBtn.addEventListener('click', () => {
+            viewer.camera.lookUp(-0.1);
+        });
+    }
+
+    // Home/Reset View
+    const homeBtn = document.getElementById('navHome');
+    if (homeBtn) {
+        homeBtn.addEventListener('click', () => {
+            viewer.camera.flyTo({
+                destination: Cesium.Cartesian3.fromDegrees(0.0, 0.0, 20000000),
+                orientation: {
+                    heading: 0.0,
+                    pitch: -Cesium.Math.PI_OVER_TWO,
+                    roll: 0.0
+                },
+                duration: 2.0
+            });
+        });
+    }
+
+    // Tilt Up
+    const tiltUpBtn = document.getElementById('navTiltUp');
+    if (tiltUpBtn) {
+        tiltUpBtn.addEventListener('click', () => {
+            viewer.camera.lookUp(0.1);
+        });
+    }
+
+    // Tilt Down
+    const tiltDownBtn = document.getElementById('navTiltDown');
+    if (tiltDownBtn) {
+        tiltDownBtn.addEventListener('click', () => {
+            viewer.camera.lookUp(-0.1);
+        });
+    }
+}
+
+// ============================================================================
 // SSE Connection Management
 // ============================================================================
 
@@ -2187,6 +2295,11 @@ function animate() {
         if (keysPressed.arrowright) camera.lookRight(CAMERA_ROTATION_SPEED);
         if (keysPressed.arrowup) camera.lookUp(CAMERA_ROTATION_SPEED);
         if (keysPressed.arrowdown) camera.lookDown(CAMERA_ROTATION_SPEED);
+    }
+
+    // Update compass every 5 frames
+    if (frameCount % 5 === 0) {
+        updateCompass();
     }
 
     // Phase 3: combined orbit visibility, depth scaling, and LOD (low frequency)
