@@ -816,8 +816,9 @@ function displayFullOrbit(noradId, positions) {
     }
     
     // --- Phase 3: LOD-aware gradient orbit with trail length ---
-    const cartographic = Cesium.Cartographic.fromCartesian(orbitPoints[0]);
-    const altitude = cartographic.height / 1000;
+    // Use satellite's current position for consistent color across the entire orbit
+    const colorCartographic = Cesium.Cartographic.fromCartesian(satPos);
+    const altitude = colorCartographic.height / 1000;
     const color = getColorByAltitude(altitude);
     
     // Apply trail length limit
@@ -2205,35 +2206,50 @@ function updateOrbitVisibility() {
             });
         }
         
-        // --- LOD tier change (Phase 3) ---
+        // --- LOD tier change (Phase 3) with hysteresis to prevent flickering ---
         let lodChanged = false;
         if (lodCfg.enabled && visible && orbitData.lodArrays) {
             let newTier;
-            if (dist < lodCfg.nearDist) newTier = 'near';
-            else if (dist < lodCfg.midDist) newTier = 'mid';
-            else newTier = 'far';
+            const currentTier = orbitData.lodTier || 'mid';
 
-            if (newTier !== orbitData.lodTier) {
-                console.log(`[LOD] NORAD ${noradId}: ${orbitData.lodTier} → ${newTier} (dist ${(dist/1000).toFixed(0)} km)`);
+            // Hysteresis: use different thresholds depending on current tier
+            if (currentTier === 'near') {
+                newTier = dist >= lodCfg.midDist * 1.2 ? 'mid' : 'near';
+            } else if (currentTier === 'mid') {
+                if (dist < lodCfg.nearDist * 0.9) newTier = 'near';
+                else if (dist >= lodCfg.midDist * 1.1) newTier = 'far';
+                else newTier = 'mid';
+            } else { // far
+                newTier = dist < lodCfg.midDist * 0.9 ? 'mid' : 'far';
+            }
+
+            if (newTier !== currentTier) {
+                console.log(`[LOD] NORAD ${noradId}: ${currentTier} → ${newTier} (dist ${(dist/1000).toFixed(0)} km)`);
                 rebuildOrbitSegments(noradId, orbitData.lodArrays, orbitData.color, newTier, orbitData.fullOrbitPoints);
                 lodChanged = true;
             }
         }
 
-        // --- Phase 4: Curve rebuild trigger ---
+        // --- Phase 4: Curve rebuild trigger (with hysteresis) ---
         const curveCfg = CONFIG.visual.curves;
         if (curveCfg.enabled && visible && !lodChanged && orbitData.lodArrays) {
             const cached = curvedOrbitCache.get(noradId);
+            const wasCurved = !!cached;
+
+            // Hysteresis on enableDist boundary to prevent flickering
+            const distThreshold = wasCurved
+                ? curveCfg.enableDist * 1.1
+                : curveCfg.enableDist * 0.9;
+            const shouldCurve = dist < distThreshold;
+
             const needsRebuild = cached
                 ? (frameCounter - cached.frameBuilt > curveCfg.updateEveryNFrames)
-                : (dist < curveCfg.enableDist);
-            // Also rebuild if camera crossed the enableDist threshold
-            const wasCurved = !!cached;
-            const shouldCurve = dist < curveCfg.enableDist;
-            if (needsRebuild || (wasCurved !== shouldCurve)) {
-                if (!shouldCurve) {
-                    curvedOrbitCache.delete(noradId);
-                }
+                : shouldCurve;
+
+            if (needsRebuild && shouldCurve) {
+                rebuildOrbitSegments(noradId, orbitData.lodArrays, orbitData.color, orbitData.lodTier, orbitData.fullOrbitPoints);
+            } else if (wasCurved && !shouldCurve) {
+                curvedOrbitCache.delete(noradId);
                 rebuildOrbitSegments(noradId, orbitData.lodArrays, orbitData.color, orbitData.lodTier, orbitData.fullOrbitPoints);
             }
         }
