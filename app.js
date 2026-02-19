@@ -21,7 +21,7 @@ const CONFIG = {
     // Performance optimizations
     enableFrustumCulling: true,                  // Only update visible satellites
     updateBatchSize: 500,                        // Update N satellites per frame (rotating batches)
-    orbitCallbackThrottle: 5,                    // Update orbit lines every N frames
+    orbitCallbackThrottle: 10,                   // Update orbit lines every N frames (increased to reduce flicker)
 
     // Pass prediction defaults
     passPrediction: {
@@ -841,10 +841,7 @@ function displayFullOrbit(noradId, positions) {
     }
     
     // --- Phase 3: LOD-aware gradient orbit with trail length ---
-    // Use satellite's current position for consistent color across the entire orbit
-    const colorCartographic = Cesium.Cartographic.fromCartesian(satPos);
-    const altitude = colorCartographic.height / 1000;
-    const color = getColorByAltitude(altitude);
+    const color = Cesium.Color.GREEN; // Always use solid green for orbit lines
     
     // Apply trail length limit
     const trailCfg = CONFIG.visual.trail;
@@ -987,21 +984,11 @@ function rebuildOrbitSegments(noradId, lodArrays, color, tier, fullOrbitPoints) 
         
         const segPoints = arrays[s];
         
-        // --- Material: outline on head segment, glow on all others ---
+        // --- Material: Use solid color material for stable, non-flickering lines ---
         let material;
-        if (s === 0 && vs.headOutline) {
-            const oc = vs.headOutlineColor;
-            material = new Cesium.PolylineOutlineMaterialProperty({
-                color: color.withAlpha(segAlpha),
-                outlineWidth: vs.headOutlineWidth,
-                outlineColor: new Cesium.Color(oc[0], oc[1], oc[2], oc[3])
-            });
-        } else {
-            material = new Cesium.PolylineGlowMaterialProperty({
-                glowPower: segGlow,
-                color: color.withAlpha(segAlpha)
-            });
-        }
+        material = new Cesium.ColorMaterialProperty(
+            color.withAlpha(segAlpha)
+        );
         
         // --- Positions: head segment is dynamic (tracks satellite), rest static ---
         // Phase 4: Optionally apply Catmull-Rom curve resampling to head segment
@@ -1125,12 +1112,11 @@ function applyStalenessToOrbit(noradId) {
 
     orbitData.segments.forEach(seg => {
         if (!seg.polyline) return;
-        // Replace material with dashed + reduced alpha
-        const baseColor = orbitData.color || Cesium.Color.CYAN;
-        seg.polyline.material = new Cesium.PolylineDashMaterialProperty({
-            color: baseColor.withAlpha(alphaMul),
-            dashLength: dashLen
-        });
+        // Use solid material with reduced alpha instead of dashed to prevent flickering
+        const baseColor = orbitData.color || Cesium.Color.GREEN;
+        seg.polyline.material = new Cesium.ColorMaterialProperty(
+            baseColor.withAlpha(alphaMul)
+        );
     });
 }
 
