@@ -932,6 +932,191 @@ body {
 }
 
 /* ============================================================================
+   Camera Bar (top-center)
+   ============================================================================ */
+#cameraBar {
+    position: fixed;
+    top: 55px;
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 1001;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 12px;
+    background: rgba(0, 0, 0, 0.85);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 8px;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
+}
+
+.camera-bar-group {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+}
+
+.camera-bar-divider {
+    width: 1px;
+    height: 24px;
+    background: rgba(255, 255, 255, 0.15);
+    margin: 0 4px;
+}
+
+/* Mode toggle buttons — pill-group */
+.camera-mode-btn {
+    padding: 5px 12px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    color: #aaa;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: all 0.15s;
+    white-space: nowrap;
+}
+
+.camera-mode-btn:first-child {
+    border-radius: 5px 0 0 5px;
+}
+
+.camera-mode-btn:last-child {
+    border-radius: 0 5px 5px 0;
+}
+
+.camera-mode-btn:not(:first-child) {
+    border-left: none;
+}
+
+.camera-mode-btn:hover:not(:disabled) {
+    background: rgba(255, 255, 255, 0.12);
+    color: #fff;
+}
+
+.camera-mode-btn.active {
+    background: rgba(0, 204, 255, 0.25);
+    border-color: rgba(0, 204, 255, 0.5);
+    color: #0cf;
+}
+
+.camera-mode-btn:disabled {
+    opacity: 0.35;
+    cursor: not-allowed;
+}
+
+/* Nav buttons */
+.camera-nav-btn {
+    padding: 4px 10px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 4px;
+    color: #ccc;
+    font-size: 14px;
+    cursor: pointer;
+    transition: all 0.15s;
+    line-height: 1;
+}
+
+.camera-nav-btn:hover {
+    background: rgba(255, 255, 255, 0.15);
+    color: #fff;
+    border-color: rgba(255, 255, 255, 0.3);
+}
+
+/* Compass arrow rotation */
+.compass-arrow {
+    display: inline-block;
+    transition: transform 0.3s ease;
+    font-size: 16px;
+    line-height: 1;
+}
+
+/* Go To inputs */
+.camera-goto-label {
+    font-size: 11px;
+    color: #888;
+    font-weight: 600;
+    margin-right: 2px;
+}
+
+.camera-goto-input {
+    width: 64px;
+    padding: 4px 6px;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 4px;
+    color: #fff;
+    font-size: 11px;
+    font-family: 'Courier New', monospace;
+}
+
+.camera-goto-input:focus {
+    outline: none;
+    border-color: rgba(0, 204, 255, 0.5);
+    background: rgba(255, 255, 255, 0.12);
+}
+
+.camera-goto-input::placeholder {
+    color: #555;
+}
+
+/* Follow button in selection items */
+.follow-btn {
+    padding: 2px 8px;
+    background: rgba(0, 204, 255, 0.15);
+    border: 1px solid rgba(0, 204, 255, 0.3);
+    border-radius: 3px;
+    color: #0cf;
+    font-size: 10px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all 0.15s;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.follow-btn:hover {
+    background: rgba(0, 204, 255, 0.3);
+    border-color: rgba(0, 204, 255, 0.6);
+}
+
+.follow-btn.following {
+    background: rgba(0, 204, 255, 0.35);
+    border-color: #0cf;
+    color: #fff;
+}
+
+/* Edge Indicator */
+#edgeIndicator {
+    position: fixed;
+    z-index: 1002;
+    color: #0cf;
+    font-size: 22px;
+    pointer-events: none;
+    text-shadow: 0 0 10px rgba(0, 204, 255, 0.8),
+                 0 0 20px rgba(0, 204, 255, 0.4);
+    animation: edgePulse 1.2s ease-in-out infinite;
+}
+
+@keyframes edgePulse {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 1; }
+}
+
+/* Responsive: hide Go To on mobile */
+@media (max-width: 768px) {
+    .camera-bar-goto-divider,
+    .camera-goto-group {
+        display: none;
+    }
+
+    #cameraBar {
+        top: 48px;
+    }
+}
+
+/* ============================================================================
    Mini Earth Navigation Sphere (Canvas 3D)
    ============================================================================ */
 #miniEarthContainer {

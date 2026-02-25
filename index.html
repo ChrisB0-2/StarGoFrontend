@@ -21,6 +21,33 @@
     <!-- Cesium Viewer Container -->
     <div id="cesiumContainer"></div>
 
+    <!-- Camera Bar (top-center) -->
+    <div id="cameraBar">
+        <div class="camera-bar-group camera-mode-group">
+            <button id="cameraModeExplore" class="camera-mode-btn active" title="Explore mode (1)">Explore</button>
+            <button id="cameraModeInspect" class="camera-mode-btn" title="Inspect mode (2)" disabled>Inspect</button>
+            <button id="cameraModeFollow" class="camera-mode-btn" title="Follow mode (3/F)" disabled>Follow</button>
+        </div>
+        <div class="camera-bar-divider"></div>
+        <div class="camera-bar-group camera-nav-group">
+            <button id="cameraHome" class="camera-nav-btn" title="Home (reset view)">&#8962;</button>
+            <button id="cameraBack" class="camera-nav-btn" title="Back (Backspace)">&#8617;</button>
+            <button id="cameraCompass" class="camera-nav-btn" title="Re-north (N)">
+                <span id="compassArrow" class="compass-arrow">&#8593;</span>
+            </button>
+        </div>
+        <div class="camera-bar-divider camera-bar-goto-divider"></div>
+        <div class="camera-bar-group camera-goto-group">
+            <label class="camera-goto-label">Go To:</label>
+            <input type="number" id="gotoLat" class="camera-goto-input" placeholder="Lat" step="0.01" min="-90" max="90" />
+            <input type="number" id="gotoLon" class="camera-goto-input" placeholder="Lon" step="0.01" min="-180" max="180" />
+            <button id="gotoBtn" class="camera-nav-btn" title="Fly to coordinates">Go</button>
+        </div>
+    </div>
+
+    <!-- Edge Indicator (off-screen satellite arrow) -->
+    <div id="edgeIndicator" style="display:none">&#9650;</div>
+
     <!-- Mini Earth Navigation Sphere -->
     <div id="miniEarthContainer">
         <canvas id="miniEarthCanvas" class="mini-earth-canvas"></canvas>

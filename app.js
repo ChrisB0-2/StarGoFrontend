@@ -37,13 +37,13 @@ const CONFIG = {
     visual: {
         orbit: {
             // Phase 2: K-segment gradient (replaces Phase 1 near/far split)
-            gradientSegments: 12,                // Gradient chunks for selected orbit
-            headWidth: 4.0,                      // Width at satellite head (px)
-            tailWidth: 0.8,                      // Width at orbit tail (px)
-            headGlow: 0.5,                       // Glow power at satellite head
-            tailGlow: 0.06,                      // Glow power at orbit tail
-            headAlpha: 0.9,                      // Alpha at satellite head
-            tailAlpha: 0.12,                     // Alpha at orbit tail
+            gradientSegments: 1,                 // Single uniform segment
+            headWidth: 2.0,                      // Uniform width (px)
+            tailWidth: 2.0,                      // Same as head — no taper
+            headGlow: 0.0,                       // No glow
+            tailGlow: 0.0,                       // No glow
+            headAlpha: 0.8,                      // Uniform alpha
+            tailAlpha: 0.8,                      // Same as head — no fade
             headOutline: true,                   // Use outline material on head segment
             headOutlineWidth: 1.5,               // Outline width (px)
             headOutlineColor: [1, 1, 1, 0.35],   // Outline RGBA
@@ -140,6 +140,17 @@ const CONFIG = {
             showBadge: true,                     // show per-satellite staleness badge
             showGlobalIndicator: true            // show worst-case in status bar
         }
+    },
+
+    // Camera state machine settings
+    camera: {
+        easingDuration: 2.0,             // seconds for flyTo transitions
+        maxAngularVelocity: 0.003,       // radians/frame — inspect nudge cap
+        safeScreenMargin: 0.10,          // 10% of screen edge = "near edge"
+        inspectNudgeSpeed: 0.15,         // radians/sec nudge toward target
+        minPitch: -Cesium.Math.PI_OVER_TWO, // straight down
+        maxPitch: 0.0,                   // horizon (never look above horizon)
+        maxHistoryEntries: 20            // camera history stack depth
     }
 };
 
@@ -206,13 +217,15 @@ let uncertaintyEntities = new Map();             // NORAD → { segments[], mode
 let satelliteTleEpochs = new Map();              // NORAD → { epochDate, ageSeconds }
 let historyTrailMinutes = 10;                    // current user setting
 
-// WASD Camera Movement + Arrow Key Rotation State
-const keysPressed = {
-    w: false, a: false, s: false, d: false, q: false, e: false,
-    arrowleft: false, arrowright: false, arrowup: false, arrowdown: false
-};
-const CAMERA_MOVE_SPEED = 50000;                 // meters per frame
-const CAMERA_ROTATION_SPEED = 0.02;              // radians per frame
+
+// Camera State Machine
+let cameraMode = 'explore';                      // 'explore' | 'inspect' | 'follow'
+let previousCameraMode = 'explore';              // for reverting on deselection
+let inspectTargetNoradId = null;                 // NORAD ID of inspect target (or null)
+let followTargetNoradId = null;                  // NORAD ID of follow target (or null)
+let cameraHistoryStack = [];                     // stack of {destination, orientation} snapshots
+let isTransitioning = false;                     // true during flyTo animations
+let lastCameraPushTime = 0;                      // debounce camera pushes (ms)
 
 // Helper: read an entity's current position regardless of whether
 // Cesium wrapped it in a Property or it's a raw Cartesian3
@@ -226,6 +239,424 @@ function getEntityPosition(entity) {
         return val ? val.clone() : null;
     }
     return null;
+}
+
+// ============================================================================
+// Camera State Machine
+// ============================================================================
+
+function getFirstSelectedNoradId() {
+    if (selectedSatellites.size === 0) return null;
+    return selectedSatellites.values().next().value;
+}
+
+function setCameraMode(mode, targetNoradId) {
+    const validModes = ['explore', 'inspect', 'follow'];
+    if (!validModes.includes(mode)) return;
+
+    previousCameraMode = cameraMode;
+    cameraMode = mode;
+
+    // Teardown previous mode
+    if (previousCameraMode === 'follow') {
+        viewer.trackedEntity = undefined;
+        followTargetNoradId = null;
+    }
+    if (previousCameraMode === 'inspect') {
+        inspectTargetNoradId = null;
+        hideEdgeIndicator();
+    }
+
+    // Setup new mode
+    if (mode === 'explore') {
+        inspectTargetNoradId = null;
+        followTargetNoradId = null;
+        viewer.trackedEntity = undefined;
+        // Snap back to previous camera position if we have history
+        if (cameraHistoryStack.length > 0) {
+            const entry = cameraHistoryStack[cameraHistoryStack.length - 1];
+            viewer.camera.flyTo({
+                destination: entry.destination,
+                orientation: entry.orientation,
+                duration: CONFIG.camera.easingDuration
+            });
+        }
+    } else if (mode === 'inspect') {
+        const nid = targetNoradId || getFirstSelectedNoradId();
+        if (!nid || !selectedSatellites.has(nid)) {
+            // No valid target — fall back to explore
+            cameraMode = 'explore';
+            inspectTargetNoradId = null;
+            console.log('[Camera] No valid inspect target, staying in Explore');
+            updateCameraModeUI();
+            return;
+        }
+        inspectTargetNoradId = nid;
+        followTargetNoradId = null;
+        // Set trackedEntity so camera snaps to the satellite
+        const inspectEntity = entities.get(nid);
+        if (inspectEntity) {
+            viewer.trackedEntity = inspectEntity;
+        }
+    } else if (mode === 'follow') {
+        const nid = targetNoradId || getFirstSelectedNoradId();
+        if (!nid || !selectedSatellites.has(nid)) {
+            cameraMode = 'explore';
+            followTargetNoradId = null;
+            console.log('[Camera] No valid follow target, staying in Explore');
+            updateCameraModeUI();
+            return;
+        }
+        followTargetNoradId = nid;
+        inspectTargetNoradId = null;
+        hideEdgeIndicator();
+        const entity = entities.get(nid);
+        if (entity) {
+            smoothTransitionToFollow(entity);
+        }
+    }
+
+    console.log(`[Camera] Mode: ${previousCameraMode} → ${cameraMode}` +
+        (inspectTargetNoradId ? ` (inspect: ${inspectTargetNoradId})` : '') +
+        (followTargetNoradId ? ` (follow: ${followTargetNoradId})` : ''));
+
+    updateCameraModeUI();
+}
+
+function pushCameraHistory() {
+    const now = Date.now();
+    if (now - lastCameraPushTime < 500) return; // debounce 500ms
+    lastCameraPushTime = now;
+
+    const cam = viewer.camera;
+    cameraHistoryStack.push({
+        destination: cam.positionWC.clone(),
+        orientation: {
+            heading: cam.heading,
+            pitch: cam.pitch,
+            roll: cam.roll
+        }
+    });
+
+    // Trim to max
+    if (cameraHistoryStack.length > CONFIG.camera.maxHistoryEntries) {
+        cameraHistoryStack.shift();
+    }
+}
+
+function popCameraHistory() {
+    if (cameraHistoryStack.length === 0) return;
+    const entry = cameraHistoryStack.pop();
+
+    isTransitioning = true;
+    viewer.camera.flyTo({
+        destination: entry.destination,
+        orientation: entry.orientation,
+        duration: CONFIG.camera.easingDuration,
+        complete: () => { isTransitioning = false; }
+    });
+
+    // If we're in follow mode, exit to explore
+    if (cameraMode === 'follow') {
+        setCameraMode('explore');
+    }
+}
+
+function resetCameraHome() {
+    pushCameraHistory();
+    setCameraMode('explore');
+
+    isTransitioning = true;
+    viewer.camera.flyTo({
+        destination: Cesium.Cartesian3.fromDegrees(0.0, 0.0, 20000000),
+        orientation: {
+            heading: 0.0,
+            pitch: -Cesium.Math.PI_OVER_TWO,
+            roll: 0.0
+        },
+        duration: CONFIG.camera.easingDuration,
+        complete: () => { isTransitioning = false; }
+    });
+}
+
+function enforceHorizonLock() {
+    if (cameraMode === 'follow') return; // Cesium manages camera in follow
+    const cam = viewer.camera;
+
+    // Clamp roll to 0
+    if (Math.abs(cam.roll) > 0.01) {
+        cam.setView({
+            orientation: {
+                heading: cam.heading,
+                pitch: cam.pitch,
+                roll: 0.0
+            }
+        });
+    }
+
+    // Clamp pitch
+    const minP = CONFIG.camera.minPitch;
+    const maxP = CONFIG.camera.maxPitch;
+    if (cam.pitch < minP || cam.pitch > maxP) {
+        const clampedPitch = Math.max(minP, Math.min(maxP, cam.pitch));
+        cam.setView({
+            orientation: {
+                heading: cam.heading,
+                pitch: clampedPitch,
+                roll: 0.0
+            }
+        });
+    }
+}
+
+// ============================================================================
+// Inspect Mode — Soft Focus
+// ============================================================================
+
+function updateInspectMode() {
+    if (cameraMode !== 'inspect' || !inspectTargetNoradId) return;
+
+    const entity = entities.get(inspectTargetNoradId);
+    if (!entity) return;
+    const worldPos = getEntityPosition(entity);
+    if (!worldPos) return;
+
+    // Project to screen
+    const screenPos = Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene, worldPos);
+    if (!screenPos) {
+        // Off-screen entirely — nudge toward it
+        showEdgeIndicator(worldPos);
+        nudgeCameraToward(worldPos);
+        return;
+    }
+
+    const canvas = viewer.scene.canvas;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    const margin = CONFIG.camera.safeScreenMargin;
+    const left = w * margin;
+    const right = w * (1 - margin);
+    const top = h * margin;
+    const bottom = h * (1 - margin);
+
+    if (screenPos.x >= left && screenPos.x <= right &&
+        screenPos.y >= top && screenPos.y <= bottom) {
+        // Inside safe zone — do nothing
+        hideEdgeIndicator();
+        return;
+    }
+
+    // Near edge or off-screen — nudge
+    showEdgeIndicator(worldPos);
+    nudgeCameraToward(worldPos);
+}
+
+function nudgeCameraToward(targetWorldPos) {
+    if (isTransitioning) return;
+    const cam = viewer.camera;
+
+    // Direction from camera to target
+    const toTarget = Cesium.Cartesian3.subtract(targetWorldPos, cam.positionWC, new Cesium.Cartesian3());
+    Cesium.Cartesian3.normalize(toTarget, toTarget);
+
+    // Current look direction
+    const lookDir = cam.directionWC;
+
+    // Angle between look and target
+    const dot = Cesium.Cartesian3.dot(lookDir, toTarget);
+    const angle = Math.acos(Math.max(-1, Math.min(1, dot)));
+
+    if (angle < 0.001) return; // already looking at it
+
+    // Clamp step size
+    const maxStep = CONFIG.camera.maxAngularVelocity;
+    const step = Math.min(angle, maxStep);
+    const fraction = step / angle;
+
+    // Rotation axis = cross(lookDir, toTarget)
+    const axis = Cesium.Cartesian3.cross(lookDir, toTarget, new Cesium.Cartesian3());
+    if (Cesium.Cartesian3.magnitudeSquared(axis) < 1e-10) return;
+    Cesium.Cartesian3.normalize(axis, axis);
+
+    // Build quaternion for small rotation
+    const quat = Cesium.Quaternion.fromAxisAngle(axis, step);
+    const rotMatrix = Cesium.Matrix3.fromQuaternion(quat);
+
+    // Rotate direction and up
+    const newDir = Cesium.Matrix3.multiplyByVector(rotMatrix, cam.direction, new Cesium.Cartesian3());
+    const newUp = Cesium.Matrix3.multiplyByVector(rotMatrix, cam.up, new Cesium.Cartesian3());
+
+    cam.direction = newDir;
+    cam.up = newUp;
+
+    enforceHorizonLock();
+}
+
+function showEdgeIndicator(worldPos) {
+    const el = document.getElementById('edgeIndicator');
+    if (!el) return;
+
+    const screenPos = Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene, worldPos);
+    const canvas = viewer.scene.canvas;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    const cx = w / 2;
+    const cy = h / 2;
+
+    // If screenPos is null, use direction-based projection
+    let sx, sy;
+    if (screenPos) {
+        sx = screenPos.x;
+        sy = screenPos.y;
+    } else {
+        // Project direction to screen edge
+        const cam = viewer.camera;
+        const toTarget = Cesium.Cartesian3.subtract(worldPos, cam.positionWC, new Cesium.Cartesian3());
+        Cesium.Cartesian3.normalize(toTarget, toTarget);
+        // Use dot products with camera right/up for screen-space direction
+        const rightDot = Cesium.Cartesian3.dot(toTarget, cam.rightWC);
+        const upDot = Cesium.Cartesian3.dot(toTarget, cam.upWC);
+        const scale = Math.max(Math.abs(rightDot), Math.abs(upDot), 0.001);
+        sx = cx + (rightDot / scale) * cx;
+        sy = cy - (upDot / scale) * cy;
+    }
+
+    // Clamp to screen edges with 20px padding
+    const pad = 20;
+    const clampedX = Math.max(pad, Math.min(w - pad, sx));
+    const clampedY = Math.max(pad, Math.min(h - pad, sy));
+
+    // Rotation: angle from center to clamped position
+    const angle = Math.atan2(clampedY - cy, clampedX - cx);
+    const angleDeg = angle * (180 / Math.PI) + 90; // +90 because arrow points up by default
+
+    el.style.left = clampedX + 'px';
+    el.style.top = clampedY + 'px';
+    el.style.transform = `translate(-50%, -50%) rotate(${angleDeg}deg)`;
+    el.style.display = 'block';
+}
+
+function hideEdgeIndicator() {
+    const el = document.getElementById('edgeIndicator');
+    if (el) el.style.display = 'none';
+}
+
+// ============================================================================
+// Follow Mode — Explicit Track
+// ============================================================================
+
+function smoothTransitionToFollow(entity) {
+    if (!entity) return;
+
+    isTransitioning = true;
+    pushCameraHistory();
+
+    viewer.flyTo(entity, {
+        duration: CONFIG.camera.easingDuration,
+        offset: new Cesium.HeadingPitchRange(
+            viewer.camera.heading,
+            Cesium.Math.toRadians(-30),
+            1000000
+        )
+    }).then(() => {
+        // Set tracked entity after flyTo completes for smooth transition
+        if (cameraMode === 'follow' && followTargetNoradId) {
+            viewer.trackedEntity = entity;
+        }
+        isTransitioning = false;
+        enforceHorizonLock();
+    }).catch(() => {
+        isTransitioning = false;
+    });
+}
+
+// ============================================================================
+// Camera UI Setup & Updates
+// ============================================================================
+
+function setupCameraUI() {
+    // Mode buttons
+    const exploreBtn = document.getElementById('cameraModeExplore');
+    const inspectBtn = document.getElementById('cameraModeInspect');
+    const followBtn = document.getElementById('cameraModeFollow');
+
+    if (exploreBtn) exploreBtn.addEventListener('click', () => setCameraMode('explore'));
+    if (inspectBtn) inspectBtn.addEventListener('click', () => setCameraMode('inspect'));
+    if (followBtn) followBtn.addEventListener('click', () => setCameraMode('follow'));
+
+    // Nav buttons
+    const homeBtn = document.getElementById('cameraHome');
+    const backBtn = document.getElementById('cameraBack');
+    const compassBtn = document.getElementById('cameraCompass');
+
+    if (homeBtn) homeBtn.addEventListener('click', () => resetCameraHome());
+    if (backBtn) backBtn.addEventListener('click', () => popCameraHistory());
+    if (compassBtn) {
+        compassBtn.addEventListener('click', () => {
+            // Re-north: flyTo current position with heading=0
+            pushCameraHistory();
+            isTransitioning = true;
+            viewer.camera.flyTo({
+                destination: viewer.camera.positionWC.clone(),
+                orientation: {
+                    heading: 0.0,
+                    pitch: viewer.camera.pitch,
+                    roll: 0.0
+                },
+                duration: CONFIG.camera.easingDuration * 0.5,
+                complete: () => { isTransitioning = false; }
+            });
+        });
+    }
+
+    // Go To
+    const gotoBtn = document.getElementById('gotoBtn');
+    if (gotoBtn) {
+        gotoBtn.addEventListener('click', () => {
+            const lat = parseFloat(document.getElementById('gotoLat').value);
+            const lon = parseFloat(document.getElementById('gotoLon').value);
+            if (isNaN(lat) || isNaN(lon)) return;
+            pushCameraHistory();
+            isTransitioning = true;
+            viewer.camera.flyTo({
+                destination: Cesium.Cartesian3.fromDegrees(lon, lat, 2000000),
+                orientation: {
+                    heading: 0.0,
+                    pitch: -Cesium.Math.PI_OVER_TWO,
+                    roll: 0.0
+                },
+                duration: CONFIG.camera.easingDuration,
+                complete: () => { isTransitioning = false; }
+            });
+        });
+    }
+}
+
+function updateCameraModeUI() {
+    const exploreBtn = document.getElementById('cameraModeExplore');
+    const inspectBtn = document.getElementById('cameraModeInspect');
+    const followBtn = document.getElementById('cameraModeFollow');
+
+    const hasSelection = selectedSatellites.size > 0;
+
+    [exploreBtn, inspectBtn, followBtn].forEach(btn => {
+        if (btn) btn.classList.remove('active');
+    });
+
+    if (cameraMode === 'explore' && exploreBtn) exploreBtn.classList.add('active');
+    if (cameraMode === 'inspect' && inspectBtn) inspectBtn.classList.add('active');
+    if (cameraMode === 'follow' && followBtn) followBtn.classList.add('active');
+
+    // Disable inspect/follow when no selection
+    if (inspectBtn) inspectBtn.disabled = !hasSelection;
+    if (followBtn) followBtn.disabled = !hasSelection;
+}
+
+function updateCompassArrow() {
+    const arrow = document.getElementById('compassArrow');
+    if (!arrow || !viewer) return;
+    const heading = Cesium.Math.toDegrees(viewer.camera.heading);
+    arrow.style.transform = `rotate(${heading}deg)`;
 }
 
 // ============================================================================
@@ -260,7 +691,7 @@ function init() {
     viewer.scene.sun.show = true;
     viewer.scene.moon.show = true;
     viewer.scene.screenSpaceCameraController.minimumZoomDistance = 1;
-    
+
     // Performance optimizations
     viewer.scene.fog.enabled = false;                       // Disable fog
     viewer.scene.globe.showGroundAtmosphere = false;        // Disable ground atmosphere
@@ -283,6 +714,9 @@ function init() {
 
     // Setup mini Earth navigation
     setupMiniEarthNavigation();
+
+    // Setup camera UI
+    setupCameraUI();
 
     // Setup satellite click handler
     setupClickHandler();
@@ -321,10 +755,10 @@ function setupClickHandler() {
     handler.setInputAction((click) => {
         const pickedObject = viewer.scene.pick(click.position);
         
-        // Phase 3: Click empty space → clear camera follow (keep selection)
+        // Click empty space → exit Follow mode to Explore (keep selection)
         if (!Cesium.defined(pickedObject) || !Cesium.defined(pickedObject.id)) {
-            if (viewer.trackedEntity) {
-                viewer.trackedEntity = undefined;
+            if (cameraMode === 'follow') {
+                setCameraMode('explore');
             }
             return;
         }
@@ -341,15 +775,13 @@ function setupClickHandler() {
                 toggleSatelliteSelection(noradId);
             }
         }
-        // Phase 3: Click on orbit line → follow that satellite
+        // Click on orbit line → toggle selection for that satellite
         else if (entityId && entityId.startsWith('orbit-seg-')) {
             const match = entityId.match(/^orbit-seg-(\d+)-/);
             if (match) {
                 const noradId = parseInt(match[1], 10);
-                const satEntity = entities.get(noradId);
-                if (satEntity) {
-                    viewer.trackedEntity = satEntity;
-                }
+                clearHover();
+                toggleSatelliteSelection(noradId);
             }
         }
         // Phase 3: Click on glow dot → toggle selection
@@ -361,6 +793,38 @@ function setupClickHandler() {
             }
         }
     }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+
+    // Double-click on globe → flyTo that ground point
+    handler.setInputAction((click) => {
+        const pickedObject = viewer.scene.pick(click.position);
+        // Only handle double-click on empty space (globe)
+        if (Cesium.defined(pickedObject) && Cesium.defined(pickedObject.id)) return;
+
+        const ray = viewer.camera.getPickRay(click.position);
+        if (!ray) return;
+        const groundPos = viewer.scene.globe.pick(ray, viewer.scene);
+        if (!groundPos) return;
+
+        pushCameraHistory();
+        const cartographic = Cesium.Cartographic.fromCartesian(groundPos);
+        if (!cartographic) return;
+
+        isTransitioning = true;
+        viewer.camera.flyTo({
+            destination: Cesium.Cartesian3.fromRadians(
+                cartographic.longitude,
+                cartographic.latitude,
+                viewer.camera.positionCartographic.height * 0.5 // zoom in a bit
+            ),
+            orientation: {
+                heading: 0.0,  // north-up
+                pitch: -Cesium.Math.PI_OVER_TWO,
+                roll: 0.0
+            },
+            duration: CONFIG.camera.easingDuration,
+            complete: () => { isTransitioning = false; }
+        });
+    }, Cesium.ScreenSpaceEventType.LEFT_DOUBLE_CLICK);
 }
 
 // ============================================================================
@@ -473,8 +937,8 @@ function selectSatellite(noradId) {
             uri: isISS
                 ? './models/international_space_station_iss.glb'
                 : './models/starlink_spacex_satellite.glb',
-            minimumPixelSize: isISS ? 64 : 48,
-            maximumScale: 200000,
+            minimumPixelSize: isISS ? 150 : 120,
+            maximumScale: undefined,
             scale: 1,
             show: true,
             color: isISS ? Cesium.Color.WHITE : Cesium.Color.CYAN,
@@ -517,10 +981,17 @@ function selectSatellite(noradId) {
     }
     
     console.log(`[Selection] Selected NORAD ${noradId}`);
-    
-    // Track the satellite with camera
-    viewer.trackedEntity = entity;
-    
+
+    // Enter Inspect mode — snap camera to the satellite
+    if (cameraMode === 'explore' || cameraMode === 'inspect') {
+        setCameraMode('inspect', noradId);
+        if (entity) {
+            pushCameraHistory();
+            viewer.trackedEntity = entity;
+        }
+    }
+    // If already in follow mode, stay in follow
+
     // Fetch full orbit if enabled
     if (fullOrbitsEnabled) {
         fetchFullOrbit(noradId);
@@ -563,12 +1034,18 @@ function searchAndSelectSatellite(noradId) {
         updateSelectionUI();
     }
     
-    // Fly to the satellite
+    // Gentle flyTo the satellite (Inspect mode, no trackedEntity)
     const entity = entities.get(noradNum);
     if (entity && viewer) {
+        pushCameraHistory();
+        isTransitioning = true;
         viewer.flyTo(entity, {
-            duration: 2.0,
+            duration: CONFIG.camera.easingDuration,
             offset: new Cesium.HeadingPitchRange(0, Cesium.Math.toRadians(-45), 1000000)
+        }).then(() => {
+            isTransitioning = false;
+        }).catch(() => {
+            isTransitioning = false;
         });
     }
     
@@ -589,20 +1066,24 @@ function searchAndSelectSatellite(noradId) {
 function deselectSatellite(noradId) {
     selectedSatellites.delete(noradId);
     
-    // Swap 3D model → point for deselected satellite
+    // Hide both model and point simultaneously, then restore point
     const entity = entities.get(noradId);
     if (entity) {
-        // Remove 3D model
+        // Step 1: Hide both at the same time
         if (entity.model) entity.model.show = false;
+        if (entity.point) entity.point.show = false;
+
+        // Step 2: Remove model
         entity.model = undefined;
-        // Restore the point dot (with special styling for ISS)
+
+        // Step 3: Restore point dot styling and show it
         if (entity.point) {
             const isISS = parseInt(noradId) === 25544 || noradId === 25544;
-            entity.point.show = true;
             entity.point.pixelSize = isISS ? 14 : 5;
             entity.point.color = isISS ? Cesium.Color.RED : Cesium.Color.YELLOW;
             entity.point.outlineColor = isISS ? Cesium.Color.WHITE : Cesium.Color.BLACK;
             entity.point.outlineWidth = isISS ? 3 : 1;
+            entity.point.show = true;
         }
     }
     
@@ -613,11 +1094,23 @@ function deselectSatellite(noradId) {
         headGlowEntities.delete(noradId);
     }
     
-    // Stop tracking if this was the tracked satellite
+    // Stop tracking and fly back to previous view
     if (viewer.trackedEntity === entity) {
         viewer.trackedEntity = undefined;
+        if (cameraHistoryStack.length > 0) {
+            const entry = cameraHistoryStack.pop();
+            viewer.camera.flyTo({
+                destination: entry.destination,
+                orientation: entry.orientation,
+                duration: CONFIG.camera.easingDuration
+            });
+        }
     }
-    
+    cameraMode = 'explore';
+    inspectTargetNoradId = null;
+    followTargetNoradId = null;
+    updateCameraModeUI();
+
     // Remove full orbit polyline
     removeFullOrbit(noradId);
 
@@ -632,7 +1125,7 @@ function deselectSatellite(noradId) {
 }
 
 function clearAllSelections() {
-    viewer.trackedEntity = undefined;
+    setCameraMode('explore');
     const selected = Array.from(selectedSatellites);
     for (const noradId of selected) {
         deselectSatellite(noradId);
@@ -1615,15 +2108,7 @@ function setupEventHandlers() {
     
     // Reset view button
     document.getElementById('resetViewBtn').addEventListener('click', () => {
-        viewer.camera.flyTo({
-            destination: Cesium.Cartesian3.fromDegrees(0.0, 0.0, 20000000),
-            orientation: {
-                heading: 0.0,
-                pitch: -Cesium.Math.PI_OVER_TWO,
-                roll: 0.0
-            },
-            duration: 2.0
-        });
+        resetCameraHome();
     });
     
     // Clear data button
@@ -1707,20 +2192,33 @@ function setupEventHandlers() {
         });
     }
 
-    // WASD Camera Movement + Arrow Key Rotation
+    // Camera Mode Hotkeys (mouse handles all movement)
     document.addEventListener('keydown', (e) => {
+        // Skip hotkeys when focus is in input fields
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
         const key = e.key.toLowerCase();
-        if (key in keysPressed) {
-            if (e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
-                keysPressed[key] = true;
-                e.preventDefault();
-            }
-        }
-    });
-    document.addEventListener('keyup', (e) => {
-        const key = e.key.toLowerCase();
-        if (key in keysPressed) {
-            keysPressed[key] = false;
+
+        if (key === '1') {
+            setCameraMode('explore');
+            e.preventDefault();
+        } else if (key === '2') {
+            setCameraMode('inspect');
+            e.preventDefault();
+        } else if (key === '3' || key === 'f') {
+            setCameraMode('follow');
+            e.preventDefault();
+        } else if (key === 'home') {
+            resetCameraHome();
+            e.preventDefault();
+        } else if (key === 'backspace') {
+            popCameraHistory();
+            e.preventDefault();
+        } else if (key === 'n') {
+            // Re-north (same as compass button)
+            const compassBtn = document.getElementById('cameraCompass');
+            if (compassBtn) compassBtn.click();
+            e.preventDefault();
         }
     });
 }
@@ -2579,24 +3077,19 @@ function animate() {
     frameCount++;
     frameCounter++;
 
-    // WASD Camera Movement
-    if (keysPressed.w || keysPressed.a || keysPressed.s || keysPressed.d || keysPressed.q || keysPressed.e) {
-        const camera = viewer.camera;
-        if (keysPressed.w) camera.moveForward(CAMERA_MOVE_SPEED);
-        if (keysPressed.s) camera.moveBackward(CAMERA_MOVE_SPEED);
-        if (keysPressed.a) camera.moveLeft(CAMERA_MOVE_SPEED);
-        if (keysPressed.d) camera.moveRight(CAMERA_MOVE_SPEED);
-        if (keysPressed.q) camera.moveUp(CAMERA_MOVE_SPEED);
-        if (keysPressed.e) camera.moveDown(CAMERA_MOVE_SPEED);
+    // Inspect mode — per-frame soft focus update
+    if (cameraMode === 'inspect') {
+        updateInspectMode();
     }
 
-    // Arrow Key Camera Rotation
-    if (keysPressed.arrowleft || keysPressed.arrowright || keysPressed.arrowup || keysPressed.arrowdown) {
-        const camera = viewer.camera;
-        if (keysPressed.arrowleft) camera.lookLeft(CAMERA_ROTATION_SPEED);
-        if (keysPressed.arrowright) camera.lookRight(CAMERA_ROTATION_SPEED);
-        if (keysPressed.arrowup) camera.lookUp(CAMERA_ROTATION_SPEED);
-        if (keysPressed.arrowdown) camera.lookDown(CAMERA_ROTATION_SPEED);
+    // Horizon lock enforcement (every 30 frames, Explore/Inspect only)
+    if (cameraMode !== 'follow' && frameCounter % 30 === 0) {
+        enforceHorizonLock();
+    }
+
+    // Compass arrow rotation (every 10 frames)
+    if (frameCounter % 10 === 0) {
+        updateCompassArrow();
     }
 
     // Phase 3: combined orbit visibility, depth scaling, and LOD (low frequency)
@@ -2663,13 +3156,10 @@ function updateOrbitVisibility() {
         const orbitData = orbitEntities.get(noradId);
         if (!orbitData) return;
         
-        // --- Visibility gating (Phase 3) ---
-        // Always show orbit for the tracked (followed) entity
-        const isTracked = viewer.trackedEntity === entity;
-        const visible = isTracked || dist < visCfg.orbitCutoffDist;
+        // Selected satellites always show their orbits — no distance cutoff
         if (orbitData.segments) {
             orbitData.segments.forEach(seg => {
-                if (seg.polyline) seg.polyline.show = visible;
+                if (seg.polyline) seg.polyline.show = true;
             });
         }
         
@@ -2881,9 +3371,21 @@ function updateSelectionUI() {
             stalenessBadge.className = 'staleness-badge';
             updateStalenessBadge(noradId); // will update after DOM append
 
+            // Follow button per satellite
+            const followItemBtn = document.createElement('button');
+            followItemBtn.className = 'follow-btn' + (followTargetNoradId === noradId ? ' following' : '');
+            followItemBtn.textContent = followTargetNoradId === noradId ? 'Following' : 'Follow';
+            followItemBtn.title = `Follow NORAD ${noradId} (F)`;
+            followItemBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                setCameraMode('follow', noradId);
+                updateSelectionUI();
+            });
+
             item.appendChild(label);
             item.appendChild(stalenessBadge);
             item.appendChild(statusSpan);
+            item.appendChild(followItemBtn);
             item.appendChild(removeBtn);
             selectionList.appendChild(item);
 
