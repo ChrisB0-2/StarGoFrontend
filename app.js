@@ -74,7 +74,7 @@ const CONFIG = {
         },
         // Phase 3: Level of Detail
         lod: {
-            enabled: true,                       // Enable distance-based LOD for orbit segments
+            enabled: false,                      // Disable LOD to prevent segment count changes
             nearDist: 1000000,                   // meters — high detail below this
             midDist: 5000000,                    // meters — medium detail below this
             segmentsNear: 18,                    // Segment count at near distance
