@@ -144,10 +144,8 @@ const CONFIG = {
 
     // Camera state machine settings
     camera: {
-        easingDuration: 2.0,             // seconds for flyTo transitions
-        maxAngularVelocity: 0.003,       // radians/frame — inspect nudge cap
-        safeScreenMargin: 0.10,          // 10% of screen edge = "near edge"
-        inspectNudgeSpeed: 0.15,         // radians/sec nudge toward target
+        easingDuration: 1.0,             // seconds for flyTo transitions
+        maxAngularVelocity: 0.003,       // radians/frame — nudge cap
         minPitch: -Cesium.Math.PI_OVER_TWO, // straight down
         maxPitch: 0.0,                   // horizon (never look above horizon)
         maxHistoryEntries: 20            // camera history stack depth
@@ -219,9 +217,8 @@ let historyTrailMinutes = 10;                    // current user setting
 
 
 // Camera State Machine
-let cameraMode = 'explore';                      // 'explore' | 'inspect' | 'follow'
+let cameraMode = 'explore';                      // 'explore' | 'follow'
 let previousCameraMode = 'explore';              // for reverting on deselection
-let inspectTargetNoradId = null;                 // NORAD ID of inspect target (or null)
 let followTargetNoradId = null;                  // NORAD ID of follow target (or null)
 let cameraHistoryStack = [];                     // stack of {destination, orientation} snapshots
 let isTransitioning = false;                     // true during flyTo animations
@@ -251,25 +248,20 @@ function getFirstSelectedNoradId() {
 }
 
 function setCameraMode(mode, targetNoradId) {
-    const validModes = ['explore', 'inspect', 'follow'];
+    const validModes = ['explore', 'follow'];
     if (!validModes.includes(mode)) return;
 
     previousCameraMode = cameraMode;
     cameraMode = mode;
 
-    // Teardown previous mode
-    if (previousCameraMode === 'follow') {
+    // Teardown previous mode (only clear tracking when switching to explore)
+    if (previousCameraMode === 'follow' && mode !== 'follow') {
         viewer.trackedEntity = undefined;
         followTargetNoradId = null;
-    }
-    if (previousCameraMode === 'inspect') {
-        inspectTargetNoradId = null;
-        hideEdgeIndicator();
     }
 
     // Setup new mode
     if (mode === 'explore') {
-        inspectTargetNoradId = null;
         followTargetNoradId = null;
         viewer.trackedEntity = undefined;
         // Snap back to previous camera position if we have history
@@ -281,23 +273,6 @@ function setCameraMode(mode, targetNoradId) {
                 duration: CONFIG.camera.easingDuration
             });
         }
-    } else if (mode === 'inspect') {
-        const nid = targetNoradId || getFirstSelectedNoradId();
-        if (!nid || !selectedSatellites.has(nid)) {
-            // No valid target — fall back to explore
-            cameraMode = 'explore';
-            inspectTargetNoradId = null;
-            console.log('[Camera] No valid inspect target, staying in Explore');
-            updateCameraModeUI();
-            return;
-        }
-        inspectTargetNoradId = nid;
-        followTargetNoradId = null;
-        // Set trackedEntity so camera snaps to the satellite
-        const inspectEntity = entities.get(nid);
-        if (inspectEntity) {
-            viewer.trackedEntity = inspectEntity;
-        }
     } else if (mode === 'follow') {
         const nid = targetNoradId || getFirstSelectedNoradId();
         if (!nid || !selectedSatellites.has(nid)) {
@@ -308,8 +283,6 @@ function setCameraMode(mode, targetNoradId) {
             return;
         }
         followTargetNoradId = nid;
-        inspectTargetNoradId = null;
-        hideEdgeIndicator();
         const entity = entities.get(nid);
         if (entity) {
             smoothTransitionToFollow(entity);
@@ -317,7 +290,6 @@ function setCameraMode(mode, targetNoradId) {
     }
 
     console.log(`[Camera] Mode: ${previousCameraMode} → ${cameraMode}` +
-        (inspectTargetNoradId ? ` (inspect: ${inspectTargetNoradId})` : '') +
         (followTargetNoradId ? ` (follow: ${followTargetNoradId})` : ''));
 
     updateCameraModeUI();
@@ -410,164 +382,113 @@ function enforceHorizonLock() {
 }
 
 // ============================================================================
-// Inspect Mode — Soft Focus
-// ============================================================================
-
-function updateInspectMode() {
-    if (cameraMode !== 'inspect' || !inspectTargetNoradId) return;
-
-    const entity = entities.get(inspectTargetNoradId);
-    if (!entity) return;
-    const worldPos = getEntityPosition(entity);
-    if (!worldPos) return;
-
-    // Project to screen
-    const screenPos = Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene, worldPos);
-    if (!screenPos) {
-        // Off-screen entirely — nudge toward it
-        showEdgeIndicator(worldPos);
-        nudgeCameraToward(worldPos);
-        return;
-    }
-
-    const canvas = viewer.scene.canvas;
-    const w = canvas.clientWidth;
-    const h = canvas.clientHeight;
-    const margin = CONFIG.camera.safeScreenMargin;
-    const left = w * margin;
-    const right = w * (1 - margin);
-    const top = h * margin;
-    const bottom = h * (1 - margin);
-
-    if (screenPos.x >= left && screenPos.x <= right &&
-        screenPos.y >= top && screenPos.y <= bottom) {
-        // Inside safe zone — do nothing
-        hideEdgeIndicator();
-        return;
-    }
-
-    // Near edge or off-screen — nudge
-    showEdgeIndicator(worldPos);
-    nudgeCameraToward(worldPos);
-}
-
-function nudgeCameraToward(targetWorldPos) {
-    if (isTransitioning) return;
-    const cam = viewer.camera;
-
-    // Direction from camera to target
-    const toTarget = Cesium.Cartesian3.subtract(targetWorldPos, cam.positionWC, new Cesium.Cartesian3());
-    Cesium.Cartesian3.normalize(toTarget, toTarget);
-
-    // Current look direction
-    const lookDir = cam.directionWC;
-
-    // Angle between look and target
-    const dot = Cesium.Cartesian3.dot(lookDir, toTarget);
-    const angle = Math.acos(Math.max(-1, Math.min(1, dot)));
-
-    if (angle < 0.001) return; // already looking at it
-
-    // Clamp step size
-    const maxStep = CONFIG.camera.maxAngularVelocity;
-    const step = Math.min(angle, maxStep);
-    const fraction = step / angle;
-
-    // Rotation axis = cross(lookDir, toTarget)
-    const axis = Cesium.Cartesian3.cross(lookDir, toTarget, new Cesium.Cartesian3());
-    if (Cesium.Cartesian3.magnitudeSquared(axis) < 1e-10) return;
-    Cesium.Cartesian3.normalize(axis, axis);
-
-    // Build quaternion for small rotation
-    const quat = Cesium.Quaternion.fromAxisAngle(axis, step);
-    const rotMatrix = Cesium.Matrix3.fromQuaternion(quat);
-
-    // Rotate direction and up
-    const newDir = Cesium.Matrix3.multiplyByVector(rotMatrix, cam.direction, new Cesium.Cartesian3());
-    const newUp = Cesium.Matrix3.multiplyByVector(rotMatrix, cam.up, new Cesium.Cartesian3());
-
-    cam.direction = newDir;
-    cam.up = newUp;
-
-    enforceHorizonLock();
-}
-
-function showEdgeIndicator(worldPos) {
-    const el = document.getElementById('edgeIndicator');
-    if (!el) return;
-
-    const screenPos = Cesium.SceneTransforms.worldToWindowCoordinates(viewer.scene, worldPos);
-    const canvas = viewer.scene.canvas;
-    const w = canvas.clientWidth;
-    const h = canvas.clientHeight;
-    const cx = w / 2;
-    const cy = h / 2;
-
-    // If screenPos is null, use direction-based projection
-    let sx, sy;
-    if (screenPos) {
-        sx = screenPos.x;
-        sy = screenPos.y;
-    } else {
-        // Project direction to screen edge
-        const cam = viewer.camera;
-        const toTarget = Cesium.Cartesian3.subtract(worldPos, cam.positionWC, new Cesium.Cartesian3());
-        Cesium.Cartesian3.normalize(toTarget, toTarget);
-        // Use dot products with camera right/up for screen-space direction
-        const rightDot = Cesium.Cartesian3.dot(toTarget, cam.rightWC);
-        const upDot = Cesium.Cartesian3.dot(toTarget, cam.upWC);
-        const scale = Math.max(Math.abs(rightDot), Math.abs(upDot), 0.001);
-        sx = cx + (rightDot / scale) * cx;
-        sy = cy - (upDot / scale) * cy;
-    }
-
-    // Clamp to screen edges with 20px padding
-    const pad = 20;
-    const clampedX = Math.max(pad, Math.min(w - pad, sx));
-    const clampedY = Math.max(pad, Math.min(h - pad, sy));
-
-    // Rotation: angle from center to clamped position
-    const angle = Math.atan2(clampedY - cy, clampedX - cx);
-    const angleDeg = angle * (180 / Math.PI) + 90; // +90 because arrow points up by default
-
-    el.style.left = clampedX + 'px';
-    el.style.top = clampedY + 'px';
-    el.style.transform = `translate(-50%, -50%) rotate(${angleDeg}deg)`;
-    el.style.display = 'block';
-}
-
-function hideEdgeIndicator() {
-    const el = document.getElementById('edgeIndicator');
-    if (el) el.style.display = 'none';
-}
-
-// ============================================================================
 // Follow Mode — Explicit Track
 // ============================================================================
+
+// Active follow transition state (null when not animating)
+let _followTransition = null;
 
 function smoothTransitionToFollow(entity) {
     if (!entity) return;
 
-    isTransitioning = true;
     pushCameraHistory();
 
-    viewer.flyTo(entity, {
-        duration: CONFIG.camera.easingDuration,
-        offset: new Cesium.HeadingPitchRange(
-            viewer.camera.heading,
-            Cesium.Math.toRadians(-30),
-            1000000
-        )
-    }).then(() => {
-        // Set tracked entity after flyTo completes for smooth transition
-        if (cameraMode === 'follow' && followTargetNoradId) {
-            viewer.trackedEntity = entity;
+    // Cancel any existing transition
+    if (_followTransition) {
+        _followTransition = null;
+    }
+
+    const satPos = getEntityPosition(entity);
+    if (!satPos) {
+        viewer.trackedEntity = entity;
+        return;
+    }
+
+    const cam = viewer.camera;
+    const startPos = cam.positionWC.clone();
+    const startDir = cam.direction.clone();
+    const startUp = cam.up.clone();
+    const startRange = Cesium.Cartesian3.distance(startPos, satPos);
+    const targetRange = Math.max(500000, Math.min(startRange, 3000000));
+    const durationMs = CONFIG.camera.easingDuration * 1000;
+    const startTime = performance.now();
+
+    isTransitioning = true;
+
+    // Easing: smooth ease-in-out
+    function easeInOut(t) {
+        return t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+    }
+
+    _followTransition = { entity, targetRange };
+
+    function tick() {
+        // Bail if transition was cancelled
+        if (!_followTransition || _followTransition.entity !== entity) {
+            isTransitioning = false;
+            return;
         }
-        isTransitioning = false;
-        enforceHorizonLock();
-    }).catch(() => {
-        isTransitioning = false;
-    });
+
+        const elapsed = performance.now() - startTime;
+        const rawT = Math.min(1.0, elapsed / durationMs);
+        const t = easeInOut(rawT);
+
+        // Get satellite's CURRENT position (it moves each frame)
+        const currentSatPos = getEntityPosition(entity);
+        if (!currentSatPos) {
+            requestAnimationFrame(tick);
+            return;
+        }
+
+        // Interpolate range
+        const range = startRange + (targetRange - startRange) * t;
+
+        // Direction from desired camera position to satellite
+        const toSat = Cesium.Cartesian3.subtract(currentSatPos, startPos, new Cesium.Cartesian3());
+        Cesium.Cartesian3.normalize(toSat, toSat);
+
+        // Lerp camera position: blend between start position and
+        // "targetRange behind satellite along the start→sat direction"
+        const behindSat = Cesium.Cartesian3.multiplyByScalar(toSat, -range, new Cesium.Cartesian3());
+        const endPos = Cesium.Cartesian3.add(currentSatPos, behindSat, new Cesium.Cartesian3());
+
+        const lerpedPos = new Cesium.Cartesian3(
+            startPos.x + (endPos.x - startPos.x) * t,
+            startPos.y + (endPos.y - startPos.y) * t,
+            startPos.z + (endPos.z - startPos.z) * t
+        );
+
+        // Point camera at the satellite
+        const lookDir = Cesium.Cartesian3.subtract(currentSatPos, lerpedPos, new Cesium.Cartesian3());
+        Cesium.Cartesian3.normalize(lookDir, lookDir);
+
+        // Compute a stable up vector (radial from Earth center)
+        const radialUp = Cesium.Cartesian3.normalize(lerpedPos, new Cesium.Cartesian3());
+        // Right = cross(lookDir, radialUp)
+        const right = Cesium.Cartesian3.cross(lookDir, radialUp, new Cesium.Cartesian3());
+        Cesium.Cartesian3.normalize(right, right);
+        // Corrected up = cross(right, lookDir)
+        const correctedUp = Cesium.Cartesian3.cross(right, lookDir, new Cesium.Cartesian3());
+        Cesium.Cartesian3.normalize(correctedUp, correctedUp);
+
+        cam.position = lerpedPos;
+        cam.direction = lookDir;
+        cam.up = correctedUp;
+
+        if (rawT < 1.0) {
+            requestAnimationFrame(tick);
+        } else {
+            // Animation complete — camera is already looking at the satellite
+            // from the right distance, so trackedEntity won't cause a visible snap
+            _followTransition = null;
+            isTransitioning = false;
+            if (cameraMode === 'follow' && followTargetNoradId) {
+                viewer.trackedEntity = entity;
+            }
+        }
+    }
+
+    requestAnimationFrame(tick);
 }
 
 // ============================================================================
@@ -577,11 +498,9 @@ function smoothTransitionToFollow(entity) {
 function setupCameraUI() {
     // Mode buttons
     const exploreBtn = document.getElementById('cameraModeExplore');
-    const inspectBtn = document.getElementById('cameraModeInspect');
     const followBtn = document.getElementById('cameraModeFollow');
 
     if (exploreBtn) exploreBtn.addEventListener('click', () => setCameraMode('explore'));
-    if (inspectBtn) inspectBtn.addEventListener('click', () => setCameraMode('inspect'));
     if (followBtn) followBtn.addEventListener('click', () => setCameraMode('follow'));
 
     // Nav buttons
@@ -634,21 +553,18 @@ function setupCameraUI() {
 
 function updateCameraModeUI() {
     const exploreBtn = document.getElementById('cameraModeExplore');
-    const inspectBtn = document.getElementById('cameraModeInspect');
     const followBtn = document.getElementById('cameraModeFollow');
 
     const hasSelection = selectedSatellites.size > 0;
 
-    [exploreBtn, inspectBtn, followBtn].forEach(btn => {
+    [exploreBtn, followBtn].forEach(btn => {
         if (btn) btn.classList.remove('active');
     });
 
     if (cameraMode === 'explore' && exploreBtn) exploreBtn.classList.add('active');
-    if (cameraMode === 'inspect' && inspectBtn) inspectBtn.classList.add('active');
     if (cameraMode === 'follow' && followBtn) followBtn.classList.add('active');
 
-    // Disable inspect/follow when no selection
-    if (inspectBtn) inspectBtn.disabled = !hasSelection;
+    // Disable follow when no selection
     if (followBtn) followBtn.disabled = !hasSelection;
 }
 
@@ -937,9 +853,9 @@ function selectSatellite(noradId) {
             uri: isISS
                 ? './models/international_space_station_iss.glb'
                 : './models/starlink_spacex_satellite.glb',
-            minimumPixelSize: isISS ? 150 : 120,
-            maximumScale: undefined,
-            scale: 1,
+            minimumPixelSize: isISS ? 48 : 32,
+            maximumScale: 20000,
+            scale: isISS ? 200 : 5000,
             show: true,
             color: isISS ? Cesium.Color.WHITE : Cesium.Color.CYAN,
             colorBlendMode: Cesium.ColorBlendMode.HIGHLIGHT,
@@ -982,15 +898,10 @@ function selectSatellite(noradId) {
     
     console.log(`[Selection] Selected NORAD ${noradId}`);
 
-    // Enter Inspect mode — snap camera to the satellite
-    if (cameraMode === 'explore' || cameraMode === 'inspect') {
-        setCameraMode('inspect', noradId);
-        if (entity) {
-            pushCameraHistory();
-            viewer.trackedEntity = entity;
-        }
+    // Enter Follow mode — smooth transition to the satellite
+    if (entity) {
+        setCameraMode('follow', noradId);
     }
-    // If already in follow mode, stay in follow
 
     // Fetch full orbit if enabled
     if (fullOrbitsEnabled) {
@@ -1034,7 +945,7 @@ function searchAndSelectSatellite(noradId) {
         updateSelectionUI();
     }
     
-    // Gentle flyTo the satellite (Inspect mode, no trackedEntity)
+    // Gentle flyTo the satellite
     const entity = entities.get(noradNum);
     if (entity && viewer) {
         pushCameraHistory();
@@ -1107,7 +1018,6 @@ function deselectSatellite(noradId) {
         }
     }
     cameraMode = 'explore';
-    inspectTargetNoradId = null;
     followTargetNoradId = null;
     updateCameraModeUI();
 
@@ -2202,10 +2112,7 @@ function setupEventHandlers() {
         if (key === '1') {
             setCameraMode('explore');
             e.preventDefault();
-        } else if (key === '2') {
-            setCameraMode('inspect');
-            e.preventDefault();
-        } else if (key === '3' || key === 'f') {
+        } else if (key === '2' || key === '3' || key === 'f') {
             setCameraMode('follow');
             e.preventDefault();
         } else if (key === 'home') {
@@ -3077,12 +2984,7 @@ function animate() {
     frameCount++;
     frameCounter++;
 
-    // Inspect mode — per-frame soft focus update
-    if (cameraMode === 'inspect') {
-        updateInspectMode();
-    }
-
-    // Horizon lock enforcement (every 30 frames, Explore/Inspect only)
+    // Horizon lock enforcement (every 30 frames, Explore only)
     if (cameraMode !== 'follow' && frameCounter % 30 === 0) {
         enforceHorizonLock();
     }
@@ -4003,29 +3905,15 @@ function visualizePass(pass) {
         drawMaxElevationIndicator(pass);
     }
     
-    // Center camera on observer location
-    if (observerLocation) {
-        viewer.camera.flyTo({
-            destination: Cesium.Cartesian3.fromDegrees(
-                observerLocation.lng,
-                observerLocation.lat,
-                2000000 // 2000 km altitude for pass overview
-            ),
-            orientation: {
-                heading: 0.0,
-                pitch: -Cesium.Math.PI_OVER_TWO,
-                roll: 0.0
-            },
-            duration: 1.5
-        });
-    }
-    
-    // Select the satellite
+    // Select and follow the satellite
     if (noradId && !isNaN(parseInt(noradId))) {
         const nid = parseInt(noradId);
         if (!selectedSatellites.has(nid)) {
             selectSatellite(nid);
             updateSelectionUI();
+        } else {
+            // Already selected — just follow it
+            setCameraMode('follow', nid);
         }
     }
 }
