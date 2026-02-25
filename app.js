@@ -3106,12 +3106,8 @@ async function predictPasses() {
     observerLocation = { lat, lng, altitude: alt };
     placeObserverMarker(lat, lng, alt);
     
-    // Determine which satellites to predict for
-    const noradIds = selectedSatellites.size > 0
-        ? Array.from(selectedSatellites)
-        : null; // null = all satellites (backend decides)
-    
-    // Build request body
+    // Build request body — always let the backend determine which satellites
+    // pass over the observer location (no frontend filtering by selection)
     const body = {
         latitude: lat,
         longitude: lng,
@@ -3120,10 +3116,6 @@ async function predictPasses() {
         horizon_hours: horizonHours,
         max_passes: CONFIG.passPrediction.defaultMaxPasses
     };
-    
-    if (noradIds) {
-        body.norad_ids = noradIds;
-    }
     
     // Show loading state
     showPassLoading(true);
@@ -3134,8 +3126,7 @@ async function predictPasses() {
     btn.textContent = '⏳ Computing...';
     
     console.log(`[Passes] Predicting passes for ${lat.toFixed(4)}, ${lng.toFixed(4)}, ` +
-        `alt ${alt}m, minElev ${minElev}°, horizon ${horizonHours}h` +
-        (noradIds ? `, satellites: [${noradIds.join(',')}]` : ', all satellites'));
+        `alt ${alt}m, minElev ${minElev}°, horizon ${horizonHours}h, all satellites`);
     
     try {
         const headers = { 'Content-Type': 'application/json' };
