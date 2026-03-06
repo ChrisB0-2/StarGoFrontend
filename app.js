@@ -216,6 +216,14 @@ let satelliteTleEpochs = new Map();              // NORAD → { epochDate, ageSe
 let historyTrailMinutes = 10;                    // current user setting
 
 
+// Inspector State
+let inspectedSatelliteId = null;                // NORAD ID of currently inspected satellite
+let inspectorData = null;                       // Inspector response from backend
+let inspectorLoading = false;                   // True while fetching inspector data
+let inspectorError = null;                      // Error message if fetch failed
+let inspectorAbortController = null;            // AbortController for cancelling stale requests
+let inspectorOverlayEntities = [];              // Cesium entities for inspector visuals (ring, beam)
+
 // Camera State Machine
 let cameraMode = 'explore';                      // 'explore' | 'follow'
 let previousCameraMode = 'explore';              // for reverting on deselection
@@ -642,6 +650,9 @@ function init() {
     
     // Setup pass prediction event handlers
     setupPassEventHandlers();
+
+    // Setup inspector event handlers
+    setupInspectorEvents();
     
     // Load backend URL from input field
     const backendUrlInput = document.getElementById('backendUrl');
@@ -820,7 +831,9 @@ function clearHover() {
 
 function toggleSatelliteSelection(noradId) {
     if (selectedSatellites.has(noradId)) {
-        deselectSatellite(noradId);
+        // If already selected, open/switch inspector instead of deselecting
+        // (deselect via the X button in the selection panel)
+        openInspector(noradId);
     } else {
         selectSatellite(noradId);
     }
@@ -829,13 +842,13 @@ function toggleSatelliteSelection(noradId) {
 
 function selectSatellite(noradId) {
     selectedSatellites.add(noradId);
-    
+
     // Swap point → 3D model for selected satellite (with optional pulse)
     const entity = entities.get(noradId);
     if (entity) {
         // Hide the point dot
         if (entity.point) entity.point.show = false;
-        
+
         // Pulse silhouette size via lightweight CallbackProperty
         const ps = CONFIG.visual.pulse;
         const silhouetteProp = ps.enabled
@@ -846,7 +859,7 @@ function selectSatellite(noradId) {
                 return mid + amp * Math.sin(t * ps.speed * Math.PI * 2);
             }, false)
             : 2.0;
-        
+
         // Add 3D model — ISS gets ISS model, others get Starlink model
         const isISS = parseInt(noradId) === 25544 || noradId === 25544;
         entity.model = {
@@ -898,10 +911,8 @@ function selectSatellite(noradId) {
     
     console.log(`[Selection] Selected NORAD ${noradId}`);
 
-    // Enter Follow mode — smooth transition to the satellite
-    if (entity) {
-        setCameraMode('follow', noradId);
-    }
+    // Open inspector panel (do NOT auto-enter Follow mode — keep Earth as main frame)
+    openInspector(noradId);
 
     // Fetch full orbit if enabled
     if (fullOrbitsEnabled) {
@@ -976,7 +987,7 @@ function searchAndSelectSatellite(noradId) {
 
 function deselectSatellite(noradId) {
     selectedSatellites.delete(noradId);
-    
+
     // Hide both model and point simultaneously, then restore point
     const entity = entities.get(noradId);
     if (entity) {
@@ -987,7 +998,7 @@ function deselectSatellite(noradId) {
         // Step 2: Remove model
         entity.model = undefined;
 
-        // Step 3: Restore point dot styling and show it
+        // Step 3: Restore point dot styling (visibility set by updateSatelliteDotsVisibility)
         if (entity.point) {
             const isISS = parseInt(noradId) === 25544 || noradId === 25544;
             entity.point.pixelSize = isISS ? 14 : 5;
@@ -1021,6 +1032,11 @@ function deselectSatellite(noradId) {
     followTargetNoradId = null;
     updateCameraModeUI();
 
+    // Close inspector if this satellite was being inspected
+    if (inspectedSatelliteId === noradId) {
+        closeInspector();
+    }
+
     // Remove full orbit polyline
     removeFullOrbit(noradId);
 
@@ -1035,6 +1051,7 @@ function deselectSatellite(noradId) {
 }
 
 function clearAllSelections() {
+    closeInspector();
     setCameraMode('explore');
     const selected = Array.from(selectedSatellites);
     for (const noradId of selected) {
@@ -1312,6 +1329,51 @@ function displayFullOrbit(noradId, positions) {
     console.log(`[Orbit] Displayed ${orbitPoints.length} orbit positions for NORAD ${noradId}` +
         (needsKmToMeters ? ' (km→m)' : '') +
         (needsTemeConversion ? ' (TEME→ECEF)' : ''));
+
+    updateSatelliteDotsVisibility();
+}
+
+// Hide all non-selected satellite dots when orbital lines are visible,
+// restore them when no orbital lines are active.
+function updateSatelliteDotsVisibility() {
+    const orbitsActive = orbitEntities.size > 0 && fullOrbitsEnabled;
+    entities.forEach((entity, noradId) => {
+        if (selectedSatellites.has(noradId)) return; // selected sats show 3D models
+
+        const isISS = parseInt(noradId) === 25544 || noradId === 25544;
+        if (isISS) {
+            // When dots are hidden (follow mode), show ISS 3D model instead
+            if (orbitsActive) {
+                if (entity.point) entity.point.show = false;
+                if (!entity.model || !entity.model.show) {
+                    entity.model = {
+                        uri: './models/international_space_station_iss.glb',
+                        minimumPixelSize: 48,
+                        maximumScale: 20000,
+                        scale: 200,
+                        show: true,
+                        color: Cesium.Color.WHITE,
+                        colorBlendMode: Cesium.ColorBlendMode.HIGHLIGHT,
+                        colorBlendAmount: 0.2,
+                        silhouetteColor: Cesium.Color.CYAN,
+                        silhouetteSize: 2.0
+                    };
+                }
+            } else {
+                // Dots visible — ISS shows as red dot
+                if (entity.model) {
+                    entity.model.show = false;
+                    entity.model = undefined;
+                }
+                if (entity.point) entity.point.show = true;
+            }
+            return;
+        }
+
+        if (entity.point) {
+            entity.point.show = !orbitsActive;
+        }
+    });
 }
 
 function removeFullOrbit(noradId) {
@@ -1336,6 +1398,8 @@ function removeFullOrbit(noradId) {
         clearInterval(timer);
         orbitRefreshTimers.delete(noradId);
     }
+
+    updateSatelliteDotsVisibility();
 }
 
 // ============================================================================
@@ -1968,7 +2032,7 @@ function setupEventHandlers() {
     if (fullOrbitsCheckbox) {
         fullOrbitsCheckbox.addEventListener('change', (e) => {
             fullOrbitsEnabled = e.target.checked;
-            
+
             if (fullOrbitsEnabled) {
                 // Re-fetch orbits for selected satellites
                 selectedSatellites.forEach(noradId => {
@@ -1980,6 +2044,7 @@ function setupEventHandlers() {
                     removeFullOrbit(noradId);
                 });
             }
+            updateSatelliteDotsVisibility();
         });
     }
     
@@ -2748,7 +2813,7 @@ function createEntities(satellites) {
             const entity = viewer.entities.add(entityConfig);
             entities.set(sat.id, entity);
             cachedEntityArrayDirty = true;
-            
+
             if (isISS) {
                 console.log(`[Entities] ISS (NORAD 25544) created with special styling`);
             }
@@ -4258,6 +4323,354 @@ window.testPropagateEndpoint = function(noradId = 56337, horizon = 60, step = 5)
             throw error;
         });
 };
+
+// ============================================================================
+// Satellite Inspector
+// ============================================================================
+
+function openInspector(noradId) {
+    // If already inspecting this satellite, just ensure panel is visible
+    if (inspectedSatelliteId === noradId) {
+        const panel = document.getElementById('inspectorPanel');
+        if (panel) panel.style.display = 'flex';
+        document.body.classList.add('inspector-open');
+        return;
+    }
+
+    // Clean up previous inspector overlays
+    clearInspectorOverlays();
+
+    inspectedSatelliteId = noradId;
+    inspectorData = null;
+    inspectorError = null;
+    inspectorLoading = true;
+
+    // Show panel with loading state
+    const panel = document.getElementById('inspectorPanel');
+    if (panel) panel.style.display = 'flex';
+    document.body.classList.add('inspector-open');
+    renderInspectorState();
+
+    // Add Cesium visual overlays for selected satellite
+    addInspectorOverlays(noradId);
+
+    // Fetch inspector data from backend
+    fetchInspectorData(noradId);
+}
+
+function closeInspector() {
+    // Cancel any in-flight request
+    if (inspectorAbortController) {
+        inspectorAbortController.abort();
+        inspectorAbortController = null;
+    }
+
+    clearInspectorOverlays();
+
+    inspectedSatelliteId = null;
+    inspectorData = null;
+    inspectorError = null;
+    inspectorLoading = false;
+
+    const panel = document.getElementById('inspectorPanel');
+    if (panel) panel.style.display = 'none';
+    document.body.classList.remove('inspector-open');
+}
+
+function fetchInspectorData(noradId) {
+    // Cancel any previous in-flight request
+    if (inspectorAbortController) {
+        inspectorAbortController.abort();
+    }
+    inspectorAbortController = new AbortController();
+
+    const url = `${CONFIG.backendUrl}/api/v1/satellites/${noradId}/inspector`;
+    const headers = {};
+    if (CONFIG.authToken) {
+        headers['Authorization'] = `Bearer ${CONFIG.authToken}`;
+    }
+
+    console.log(`[Inspector] Fetching data for NORAD ${noradId}...`);
+
+    fetch(url, { signal: inspectorAbortController.signal, headers })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            // Ignore if selection changed while fetching
+            if (inspectedSatelliteId !== noradId) return;
+
+            inspectorData = data;
+            inspectorLoading = false;
+            inspectorError = null;
+            renderInspectorState();
+
+            // Update laser beam if data includes laser pointing
+            updateLaserBeamFromData(noradId, data);
+
+            console.log(`[Inspector] Data loaded for NORAD ${noradId}`);
+        })
+        .catch(err => {
+            if (err.name === 'AbortError') return; // Cancelled, ignore
+            if (inspectedSatelliteId !== noradId) return;
+
+            inspectorLoading = false;
+            inspectorError = err.message || 'Failed to fetch inspector data';
+            renderInspectorState();
+            console.error(`[Inspector] Error for NORAD ${noradId}:`, err);
+        });
+}
+
+function renderInspectorState() {
+    const loadingEl = document.getElementById('inspectorLoading');
+    const errorEl = document.getElementById('inspectorError');
+    const contentEl = document.getElementById('inspectorContent');
+    const nameEl = document.getElementById('inspectorName');
+    const noradEl = document.getElementById('inspectorNorad');
+    const timestampEl = document.getElementById('inspectorTimestamp');
+
+    if (!loadingEl || !errorEl || !contentEl) return;
+
+    // Header — always show satellite identity
+    const entity = inspectedSatelliteId ? entities.get(inspectedSatelliteId) : null;
+    const satName = entity ? (entity.name || `NORAD ${inspectedSatelliteId}`) : '--';
+    if (nameEl) nameEl.textContent = satName;
+    if (noradEl) noradEl.textContent = inspectedSatelliteId ? `NORAD ${inspectedSatelliteId}` : '--';
+
+    if (inspectorLoading) {
+        loadingEl.style.display = 'flex';
+        errorEl.style.display = 'none';
+        contentEl.style.display = 'none';
+        if (timestampEl) timestampEl.textContent = '';
+        return;
+    }
+
+    if (inspectorError) {
+        loadingEl.style.display = 'none';
+        errorEl.style.display = 'block';
+        errorEl.textContent = inspectorError;
+        contentEl.style.display = 'none';
+        if (timestampEl) timestampEl.textContent = '';
+        return;
+    }
+
+    if (!inspectorData) {
+        loadingEl.style.display = 'none';
+        errorEl.style.display = 'none';
+        contentEl.style.display = 'none';
+        return;
+    }
+
+    // We have data — render it
+    loadingEl.style.display = 'none';
+    errorEl.style.display = 'none';
+    contentEl.style.display = 'block';
+
+    const d = inspectorData;
+
+    // Timestamp
+    if (timestampEl) {
+        const ts = d.timestamp || d.observed?.timestamp || d.meta?.timestamp;
+        if (ts) {
+            const date = new Date(ts);
+            timestampEl.textContent = date.toUTCString().replace('GMT', 'UTC');
+        } else {
+            timestampEl.textContent = 'Live';
+        }
+    }
+
+    // Destructure actual backend shape
+    const simulated = d.simulated || {};
+    const derived   = d.derived   || {};
+    const gyro      = simulated.gyro        || {};
+    const laser     = simulated.death_laser || {};
+
+    // Power card
+    setMetricValue('insp-solar-health', simulated.solar_panel_health_pct != null
+        ? formatPct(simulated.solar_panel_health_pct) : null, 'pct', simulated.solar_panel_health_pct);
+    setMetricValue('insp-battery-pct', formatPct(simulated.battery_pct), 'pct', simulated.battery_pct);
+    setMetricBar('insp-battery-bar', simulated.battery_pct);
+    setMetricValue('insp-charge-state', simulated.charge_state, 'state');
+
+    // Gyro card
+    setMetricValue('insp-gyro-mode', gyro.mode);
+    setMetricValue('insp-gyro-pitch', formatDeg(gyro.pitch_deg));
+    setMetricValue('insp-gyro-yaw', formatDeg(gyro.yaw_deg));
+    setMetricValue('insp-gyro-roll', formatDeg(gyro.roll_deg));
+    setMetricValue('insp-gyro-status', gyro.status, 'health');
+
+    // Propulsion card
+    setMetricValue('insp-thruster-status', simulated.thruster_status, 'health');
+
+    // Death Laser card
+    setMetricValue('insp-laser-status', laser.status, 'health');
+    setMetricValue('insp-laser-charge', formatPct(laser.charge_pct), 'pct', laser.charge_pct);
+    setMetricBar('insp-laser-bar', laser.charge_pct);
+    setMetricValue('insp-laser-az', formatDeg(laser.azimuth_deg));
+    setMetricValue('insp-laser-el', formatDeg(laser.elevation_deg));
+    setMetricValue('insp-laser-err', formatDeg(laser.alignment_error_deg));
+
+    // Environment card
+    const sunlightStr = derived.sunlight === true  ? 'sunlit'
+                      : derived.sunlight === false ? 'eclipse' : null;
+    setMetricValue('insp-env-sunlight', sunlightStr);
+    setMetricValue('insp-env-confidence', derived.confidence);
+}
+
+// Helper: set a metric value element with optional status coloring
+function setMetricValue(elementId, value, type, rawNum) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+
+    if (value === undefined || value === null) {
+        el.textContent = '--';
+        el.className = 'inspector-metric-value';
+        return;
+    }
+
+    el.textContent = String(value);
+    el.className = 'inspector-metric-value';
+
+    if (type === 'health') {
+        const v = String(value).toLowerCase();
+        if (['nominal', 'healthy', 'ok', 'good', 'active', 'online', 'stable', 'armed', 'charging'].includes(v)) {
+            el.classList.add('val-good');
+        } else if (['degraded', 'warning', 'caution', 'standby', 'idle'].includes(v)) {
+            el.classList.add('val-warn');
+        } else if (['failed', 'error', 'critical', 'offline', 'fault'].includes(v)) {
+            el.classList.add('val-error');
+        } else {
+            el.classList.add('val-nominal');
+        }
+    } else if (type === 'pct') {
+        const n = rawNum !== undefined ? rawNum : parseFloat(value);
+        if (!isNaN(n)) {
+            if (n >= 70) el.classList.add('val-good');
+            else if (n >= 30) el.classList.add('val-warn');
+            else el.classList.add('val-error');
+        }
+    } else if (type === 'state') {
+        const v = String(value).toLowerCase();
+        if (['charging', 'full'].includes(v)) el.classList.add('val-good');
+        else if (['discharging'].includes(v)) el.classList.add('val-warn');
+        else if (['depleted', 'critical'].includes(v)) el.classList.add('val-error');
+    }
+}
+
+function setMetricBar(elementId, value) {
+    const el = document.getElementById(elementId);
+    if (!el) return;
+    const pct = (value !== undefined && value !== null && !isNaN(value))
+        ? Math.max(0, Math.min(100, value))
+        : 0;
+    el.style.width = pct + '%';
+}
+
+function formatPct(value) {
+    if (value === undefined || value === null) return '--';
+    return (typeof value === 'number') ? value.toFixed(1) + '%' : String(value);
+}
+
+function formatDeg(value) {
+    if (value === undefined || value === null) return '--';
+    return (typeof value === 'number') ? value.toFixed(1) + '\u00b0' : String(value);
+}
+
+// ============================================================================
+// Inspector Cesium Overlays
+// ============================================================================
+
+function addInspectorOverlays(noradId) {
+    const entity = entities.get(noradId);
+    if (!entity) return;
+
+    // 1. Selection ring — a pulsing translucent ring around the satellite
+    const ringEntity = viewer.entities.add({
+        id: `inspector-ring-${noradId}`,
+        position: new Cesium.ReferenceProperty(
+            viewer.entities, `sat-${noradId}`, ['position']
+        ),
+        ellipse: {
+            semiMajorAxis: 80000,
+            semiMinorAxis: 80000,
+            height: 0,
+            heightReference: Cesium.HeightReference.NONE,
+            material: new Cesium.ColorMaterialProperty(
+                new Cesium.CallbackProperty(() => {
+                    const t = performance.now() / 1000;
+                    const alpha = 0.15 + 0.1 * Math.sin(t * 2.0);
+                    return Cesium.Color.CYAN.withAlpha(alpha);
+                }, false)
+            ),
+            outline: true,
+            outlineColor: Cesium.Color.CYAN.withAlpha(0.6),
+            outlineWidth: 1
+        }
+    });
+    inspectorOverlayEntities.push(ringEntity);
+
+    // 2. Death laser beam — a harmless pointing line extending from satellite
+    //    Initial direction: straight down (nadir). Updated when data arrives.
+    const laserEntity = viewer.entities.add({
+        id: `inspector-laser-${noradId}`,
+        polyline: {
+            positions: new Cesium.CallbackProperty(() => {
+                const satPos = getEntityPosition(entities.get(noradId));
+                if (!satPos) return [];
+
+                // Default: point toward Earth center (nadir)
+                const direction = Cesium.Cartesian3.normalize(
+                    Cesium.Cartesian3.negate(satPos, new Cesium.Cartesian3()),
+                    new Cesium.Cartesian3()
+                );
+
+                // Beam length: ~200km
+                const endPos = Cesium.Cartesian3.add(
+                    satPos,
+                    Cesium.Cartesian3.multiplyByScalar(direction, 200000, new Cesium.Cartesian3()),
+                    new Cesium.Cartesian3()
+                );
+
+                return [satPos, endPos];
+            }, false),
+            width: 2,
+            material: new Cesium.PolylineGlowMaterialProperty({
+                glowPower: 0.3,
+                color: Cesium.Color.RED.withAlpha(0.6)
+            })
+        }
+    });
+    inspectorOverlayEntities.push(laserEntity);
+}
+
+function clearInspectorOverlays() {
+    for (const entity of inspectorOverlayEntities) {
+        viewer.entities.remove(entity);
+    }
+    inspectorOverlayEntities = [];
+}
+
+function updateLaserBeamFromData(noradId, data) {
+    // If we have laser pointing data, we could update the beam direction.
+    // For now, the beam always points nadir (toward Earth center) as a visual demo.
+    // Future: use azimuth/elevation from data.simulated.death_laser to compute direction.
+}
+
+// ============================================================================
+// Inspector Event Wiring
+// ============================================================================
+
+function setupInspectorEvents() {
+    const closeBtn = document.getElementById('closeInspector');
+    if (closeBtn) {
+        closeBtn.addEventListener('click', () => {
+            closeInspector();
+        });
+    }
+}
 
 // ============================================================================
 // Entry Point

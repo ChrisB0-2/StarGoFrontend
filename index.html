@@ -280,6 +280,147 @@
         </div>
     </div>
     
+    <!-- Satellite Inspector Panel (Right Side) -->
+    <div id="inspectorPanel" style="display: none;">
+        <div class="inspector-header">
+            <div class="inspector-title-row">
+                <h3 id="inspectorName">--</h3>
+                <button id="closeInspector" class="toggle-btn">&times;</button>
+            </div>
+            <div class="inspector-meta">
+                <span class="inspector-norad" id="inspectorNorad">--</span>
+                <span class="inspector-timestamp" id="inspectorTimestamp">--</span>
+            </div>
+        </div>
+
+        <div id="inspectorLoading" class="inspector-loading" style="display: none;">
+            <span class="inspector-loading-spinner"></span>
+            Loading inspector data...
+        </div>
+
+        <div id="inspectorError" class="inspector-error" style="display: none;"></div>
+
+        <div id="inspectorContent" style="display: none;">
+            <!-- Observed Section -->
+            <div class="inspector-section-label">Observed</div>
+
+            <!-- Power Card -->
+            <div class="inspector-card">
+                <div class="inspector-card-title">Power</div>
+                <div class="inspector-card-body">
+                    <div class="inspector-metric">
+                        <span class="inspector-metric-label">Solar Panel</span>
+                        <span class="inspector-metric-value" id="insp-solar-health">--</span>
+                    </div>
+                    <div class="inspector-metric">
+                        <span class="inspector-metric-label">Battery</span>
+                        <div class="inspector-bar-wrap">
+                            <div class="inspector-bar" id="insp-battery-bar" style="width: 0%"></div>
+                        </div>
+                        <span class="inspector-metric-value" id="insp-battery-pct">--%</span>
+                    </div>
+                    <div class="inspector-metric">
+                        <span class="inspector-metric-label">Charge State</span>
+                        <span class="inspector-metric-value" id="insp-charge-state">--</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Attitude / Gyro Card -->
+            <div class="inspector-card">
+                <div class="inspector-card-title">Attitude / Gyro</div>
+                <div class="inspector-card-body">
+                    <div class="inspector-metric">
+                        <span class="inspector-metric-label">Mode</span>
+                        <span class="inspector-metric-value" id="insp-gyro-mode">--</span>
+                    </div>
+                    <div class="inspector-metric-row">
+                        <div class="inspector-metric compact">
+                            <span class="inspector-metric-label">Pitch</span>
+                            <span class="inspector-metric-value" id="insp-gyro-pitch">--</span>
+                        </div>
+                        <div class="inspector-metric compact">
+                            <span class="inspector-metric-label">Yaw</span>
+                            <span class="inspector-metric-value" id="insp-gyro-yaw">--</span>
+                        </div>
+                        <div class="inspector-metric compact">
+                            <span class="inspector-metric-label">Roll</span>
+                            <span class="inspector-metric-value" id="insp-gyro-roll">--</span>
+                        </div>
+                    </div>
+                    <div class="inspector-metric">
+                        <span class="inspector-metric-label">Status</span>
+                        <span class="inspector-metric-value" id="insp-gyro-status">--</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Propulsion Card -->
+            <div class="inspector-card">
+                <div class="inspector-card-title">Propulsion</div>
+                <div class="inspector-card-body">
+                    <div class="inspector-metric">
+                        <span class="inspector-metric-label">Thruster Status</span>
+                        <span class="inspector-metric-value" id="insp-thruster-status">--</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Simulated Section -->
+            <div class="inspector-section-label">Simulated</div>
+
+            <!-- Death Laser Card -->
+            <div class="inspector-card inspector-card-laser">
+                <div class="inspector-card-title">Death Laser <span class="inspector-sim-badge">SIM</span></div>
+                <div class="inspector-card-body">
+                    <div class="inspector-metric">
+                        <span class="inspector-metric-label">Status</span>
+                        <span class="inspector-metric-value" id="insp-laser-status">--</span>
+                    </div>
+                    <div class="inspector-metric">
+                        <span class="inspector-metric-label">Charge</span>
+                        <div class="inspector-bar-wrap">
+                            <div class="inspector-bar inspector-bar-laser" id="insp-laser-bar" style="width: 0%"></div>
+                        </div>
+                        <span class="inspector-metric-value" id="insp-laser-charge">--%</span>
+                    </div>
+                    <div class="inspector-metric-row">
+                        <div class="inspector-metric compact">
+                            <span class="inspector-metric-label">Az</span>
+                            <span class="inspector-metric-value" id="insp-laser-az">--</span>
+                        </div>
+                        <div class="inspector-metric compact">
+                            <span class="inspector-metric-label">El</span>
+                            <span class="inspector-metric-value" id="insp-laser-el">--</span>
+                        </div>
+                        <div class="inspector-metric compact">
+                            <span class="inspector-metric-label">Err</span>
+                            <span class="inspector-metric-value" id="insp-laser-err">--</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Derived Section -->
+            <div class="inspector-section-label">Derived</div>
+
+            <!-- Environment Card -->
+            <div class="inspector-card">
+                <div class="inspector-card-title">Environment</div>
+                <div class="inspector-card-body">
+                    <div class="inspector-metric">
+                        <span class="inspector-metric-label">Illumination</span>
+                        <span class="inspector-metric-value" id="insp-env-sunlight">--</span>
+                    </div>
+                    <div class="inspector-metric">
+                        <span class="inspector-metric-label">Confidence</span>
+                        <span class="inspector-metric-value" id="insp-env-confidence">--</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Application Script -->
     <script src="app.js"></script>
 </body>
